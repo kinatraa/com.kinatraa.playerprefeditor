@@ -1,0 +1,32 @@
+{
+  "name": "com.kinatraa.playerprefeditor",
+  "version": "0.1.0",
+  "displayName": "kinatraa PlayerPref Editor",
+  "description": "Editor window to view, search, create, edit, delete, import and export PlayerPrefs. Every value is shown, edited and exchanged as formatted JSON. Editor-only: nothing ships in builds.",
+  "unity": "2021.3",
+  "documentationUrl": "https://github.com/kinatraa/com.kinatraa.playerprefeditor/blob/main/Documentation~/GettingStarted.md",
+  "changelogUrl": "https://github.com/kinatraa/com.kinatraa.playerprefeditor/blob/main/CHANGELOG.md",
+  "licensesUrl": "https://github.com/kinatraa/com.kinatraa.playerprefeditor/blob/main/LICENSE",
+  "license": "MIT",
+  "author": {
+    "name": "kinatraa",
+    "url": "https://github.com/kinatraa"
+  },
+  "keywords": [
+    "playerprefs",
+    "editor-tool",
+    "json",
+    "save-data",
+    "debug"
+  ],
+  "dependencies": {
+    "com.unity.nuget.newtonsoft-json": "3.2.1"
+  },
+  "samples": [
+    {
+      "displayName": "Basic Usage",
+      "description": "A sample PlayerPrefs JSON document to try Import and Export with.",
+      "path": "Samples~/BasicUsage"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+# OS / IDE files. Unity .meta files must NEVER be ignored: they hold the asset GUIDs.
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vs/
+.vscode/
+*.csproj
+*.sln
+*.user
+*.suo
+*.swp
+*.tmp
+!*.meta
