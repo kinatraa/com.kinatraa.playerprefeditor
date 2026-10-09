@@ -2,7 +2,10 @@
 
 An Editor window for Unity's `PlayerPrefs`. Find, inspect, edit, rename, delete, import and export every value as formatted JSON (2-space indent), with undo for every change.
 
-> **Screenshot placeholder:** the Player Pref Editor window (toolbar, key list with value previews and type pills, editor panel, status bar).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Documentation~/images/window-dark.png">
+  <img alt="Player Pref Editor window: key list with value previews and type pills, and a string holding JSON open for editing" src="Documentation~/images/window-light.png" width="900">
+</picture>
 
 - **Every key on desktop Editors.** Keys are read from the OS store (registry, macOS plist, Linux prefs file), so values your game wrote are listed too, with their real type.
 - **Find keys fast.** Live search over keys *and* values (plain text or regex), a type filter, sorting, pinned keys at the top, and a value preview column. Unity's own internal keys are hidden unless you ask for them.
@@ -19,13 +22,13 @@ It depends only on [Newtonsoft JSON](https://docs.unity3d.com/Packages/com.unity
 **Package Manager (git URL)**: *Window ▸ Package Manager ▸ + ▸ Add package from git URL…*
 
 ```
-https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.4.0
+https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.4.1
 ```
 
 or add it to `Packages/manifest.json`:
 
 ```json
-"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.4.0"
+"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.4.1"
 ```
 
 Declared for Unity 2021.3 or newer; see [Compatibility](#compatibility-and-what-has-been-verified) for what has actually been tested.

@@ -25,7 +25,8 @@
 
 .ppe-key-row { flex-direction: row; align-items: center; height: 22px; padding: 0 6px 0 4px; }
 .ppe-pin { width: 12px; height: 12px; margin-right: 2px; flex-shrink: 0; -unity-background-scale-mode: scale-to-fit; }
-.ppe-key-name { flex-basis: 55%; flex-grow: 1; }
+.ppe-key-cell { flex-basis: 55%; flex-grow: 1; flex-shrink: 1; min-width: 0; }
+.ppe-key-name { flex-grow: 1; flex-shrink: 1; }
 /* Dimmed by opacity, not color, so it follows the row's text color in every selection state and theme. */
 .ppe-key-preview { flex-basis: 45%; flex-grow: 1; margin-left: 8px; font-size: 11px; opacity: 0.6; }
 

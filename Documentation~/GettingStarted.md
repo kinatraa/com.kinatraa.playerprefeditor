@@ -1,6 +1,6 @@
 # Getting Started
 
-1. Install the package from `https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.4.0` (see the [README](../README.md#install)).
+1. Install the package from `https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.4.1` (see the [README](../README.md#install)).
 2. Check **Project Settings ▸ Player ▸ Company Name / Product Name**. PlayerPrefs are stored per company and product.
 3. Open **Tools ▸ kinatraa ▸ Player Pref Editor**.
 

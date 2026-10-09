@@ -4,6 +4,14 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-09
+
+### Fixed
+- Value previews of pinned keys were shifted right by the pin icon; they now line up with the other rows.
+
+### Added
+- Screenshots of the window in the README (dark and light themes).
+
 ## [0.4.0] - 2026-10-09
 
 ### Changed
@@ -79,6 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - EditMode tests for JSON round-trips, type validation, invalid input and PlayerPrefs read/write.
 - Basic Usage sample with an importable JSON document.
 
+[0.4.1]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.4.1
 [0.4.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.4.0
 [0.3.1]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.3.1
 [0.3.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.3.0

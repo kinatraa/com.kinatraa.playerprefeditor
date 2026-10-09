@@ -393,8 +393,8 @@ namespace kinatraa.PlayerPrefEditor
         VisualElement MakeRow()
         {
             var row = PrefStyles.Box("ppe-key-row");
-            row.Add(PrefStyles.Icon("Favorite", "ppe-pin").Classes("pin"));
-            row.Add(PrefStyles.Text("", "ppe-key-name").Ellipsis());
+            // The pin sits inside the key column so previews line up on pinned and unpinned rows.
+            row.Add(PrefStyles.Row(PrefStyles.Icon("Favorite", "ppe-pin").Classes("pin"), PrefStyles.Text("", "ppe-key-name").Ellipsis()).Classes("ppe-key-cell"));
             row.Add(PrefStyles.Text("", "ppe-key-preview").Ellipsis().Mono());
             row.Add(PrefStyles.TypePill(PrefType.Unknown));
             // Right-clicking a row that is not selected selects it, so the context menu acts on it.
