@@ -20,6 +20,17 @@ namespace kinatraa.PlayerPrefEditor
         [SerializeField] string _query = "";
         [SerializeField] List<string> _selection = new List<string>();
 
+        // The open edit, kept in window serialization so unsaved changes survive script reloads (entering Play Mode reloads scripts).
+        [Serializable]
+        class Draft
+        {
+            public string BaseKey, BaseJson, Key, Type, Text;
+            public bool IsNew, Renaming, Embedded, EmbeddedIndented;
+        }
+
+        [SerializeField] Draft _draft = new Draft();
+        [SerializeField] bool _hasDraft;
+
         readonly PrefFilter _filter = new PrefFilter();
         bool _autoRefresh, _preferEmbedded;
         float _leftPreferred = 320;
@@ -122,6 +133,7 @@ namespace kinatraa.PlayerPrefEditor
 
             Reload();
             var restore = _selection.ToList();
+            if (RestoreDraft()) return;
             if (restore.Count == 1 && _all.Find(e => e.Key == restore[0]) is PrefEntry entry) Show(entry, false);
             else UpdatePanes();
             SetStatus(PlayerPrefStore.LastNativeError != null
@@ -413,12 +425,7 @@ namespace kinatraa.PlayerPrefEditor
                     if (current == null) ClearEditor();
                     else if (!Same(current, _editing)) Show(current, false);
                 }
-                else if (!Same(current, _editing))
-                {
-                    _externalNote = current == null
-                        ? "This key was deleted outside the editor. Saving creates it again."
-                        : "This key changed outside the editor since you opened it. Saving overwrites that change.";
-                }
+                else _externalNote = ExternalNote(current, _editing) ?? _externalNote;
             }
 
             _source.text = SourceText();
@@ -427,6 +434,11 @@ namespace kinatraa.PlayerPrefEditor
             UpdateUndoButtons();
             UpdatePanes();
         }
+
+        static string ExternalNote(PrefEntry current, PrefEntry opened) =>
+            Same(current, opened) ? null
+            : current == null ? "This key was deleted outside the editor. Saving creates it again."
+            : "This key changed outside the editor since you opened it. Saving overwrites that change.";
 
         static bool Same(PrefEntry a, PrefEntry b) =>
             a == null ? b == null : b != null && (a.SameValue(b) || a.Type == PrefType.Unknown && b.Type == PrefType.Unknown);
@@ -659,6 +671,10 @@ namespace kinatraa.PlayerPrefEditor
                 _embedded = _preferEmbedded && !isNew;
             }
 
+            _draft.BaseKey = entry.Key;
+            _draft.BaseJson = isNew || entry.Type == PrefType.Unknown ? "" : PrefJson.FormatDocument(new[] { entry });
+            _draft.IsNew = isNew;
+
             _key.SetValueWithoutNotify(entry.Key);
             _type.SetValueWithoutNotify(PrefJson.TypeName(entry.Type));
             _value.SetValueWithoutNotify(_embedded ? _savedEmbedded : _savedPlain);
@@ -678,7 +694,43 @@ namespace kinatraa.PlayerPrefEditor
             _editing = null;
             _isNew = _renaming = _embedded = false;
             _externalNote = null;
+            _hasDraft = false;
+            hasUnsavedChanges = false;
             UpdatePanes();
+        }
+
+        /// <summary>Reopens the edit that was unsaved when scripts reloaded. Returns false when there was none.</summary>
+        bool RestoreDraft()
+        {
+            if (!_hasDraft) return false;
+            // Copy first: Show() rewrites the draft for the entry it opens.
+            string key = _draft.Key, type = _draft.Type, text = _draft.Text, baseKey = _draft.BaseKey, baseJson = _draft.BaseJson;
+            bool isNew = _draft.IsNew, renaming = _draft.Renaming, embedded = _draft.Embedded, indented = _draft.EmbeddedIndented;
+
+            PrefEntry opened;
+            if (isNew) opened = new PrefEntry(key, PrefJson.ParseType(type), null);
+            else if (PrefJson.TryParseDocument(baseJson, out var entries, out _) && entries.Count == 1) opened = entries[0];
+            else opened = PlayerPrefStore.Read(baseKey) ?? new PrefEntry(baseKey, PrefType.Unknown, null);
+
+            Show(opened, isNew);
+            _renaming = renaming;
+            _embedded = embedded;
+            _embeddedIndented = indented;
+            _embedToggle.SetValueWithoutNotify(embedded);
+            _key.SetValueWithoutNotify(key);
+            _type.SetValueWithoutNotify(type);
+            _value.SetValueWithoutNotify(text);
+            if (!isNew) _externalNote = ExternalNote(PlayerPrefStore.Read(baseKey), opened);
+            UpdatePanes();
+            SetStatus($"Kept your unsaved changes to {(string.IsNullOrEmpty(key) ? "the new key" : $"\"{key}\"")}. Save or Revert them.");
+            return true;
+        }
+
+        // Unity asks Save / Discard / Cancel when a window with unsaved changes is closed.
+        public override void SaveChanges()
+        {
+            Save();
+            if (!IsDirty) base.SaveChanges();
         }
 
         /// <summary>Parses the editor contents into a value of the selected type.</summary>
@@ -718,6 +770,18 @@ namespace kinatraa.PlayerPrefEditor
             else _info.text = "";
 
             bool dirty = IsDirty;
+            hasUnsavedChanges = dirty;
+            saveChangesMessage = $"Save changes to the PlayerPref \"{key}\"?";
+            _hasDraft = dirty;
+            if (dirty)
+            {
+                _draft.Key = key;
+                _draft.Type = _type.value;
+                _draft.Text = _value.value;
+                _draft.Renaming = _renaming;
+                _draft.Embedded = _embedded;
+                _draft.EmbeddedIndented = _embeddedIndented;
+            }
             _key.isReadOnly = !keyEditable;
             _key.tooltip = keyEditable ? "" : "Use Rename to change the key name.";
             _rename.style.display = keyEditable ? DisplayStyle.None : DisplayStyle.Flex;

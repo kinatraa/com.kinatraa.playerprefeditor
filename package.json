@@ -1,6 +1,6 @@
 {
   "name": "com.kinatraa.playerprefeditor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "displayName": "kinatraa PlayerPref Editor",
   "description": "Editor window to view, search, create, edit, rename, delete, import and export PlayerPrefs as formatted JSON. Lists every key from the OS store on Windows, macOS and Linux, with undo/redo, an import preview with merge or replace, value search, bulk actions and embedded-JSON editing. Game code can react to edits in Play Mode through PlayerPrefEvents.Changed. The window is Editor-only; builds only get one tiny event class that never fires there.",
   "unity": "2021.3",

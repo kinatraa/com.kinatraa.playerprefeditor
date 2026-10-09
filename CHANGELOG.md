@@ -4,6 +4,14 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-09
+
+### Fixed
+- Unsaved edits were lost when scripts reloaded, for example when entering Play Mode. The open edit, including a new key, a rename or **Edit as JSON** mode, now survives the reload and is still marked unsaved.
+
+### Added
+- The window tab shows when there are unsaved changes, and closing the window or quitting Unity asks to Save or Discard them.
+
 ## [0.3.0] - 2026-10-09
 
 ### Added
@@ -43,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - EditMode tests for JSON round-trips, type validation, invalid input and PlayerPrefs read/write.
 - Basic Usage sample with an importable JSON document.
 
+[0.3.1]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.3.1
 [0.3.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.3.0
 [0.2.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.2.0
 [0.1.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.1.0

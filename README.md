@@ -9,7 +9,7 @@ An Editor window for Unity's `PlayerPrefs`. View, search, create, edit, rename, 
 - **Edit as JSON.** Values sit in a monospace JSON field with live validation. A string that holds JSON can be edited as formatted JSON and is stored back as a string. Changing the type converts the value when it can (`5` → `5.0` → `"5"`).
 - **Undo and redo** for every save, rename, delete, import and Delete All, for the whole Editor session.
 - **Import preview.** See every key that would be added, changed or removed, with before → after values, pick which ones to apply, and choose Merge or Replace. Import from a file, the clipboard, or by dropping a `.json` file on the window.
-- **Safe editing.** An `● unsaved changes` marker, Revert, confirmation before deleting, a warning when a key changes outside the editor while you edit it (for example in Play Mode), and live auto-refresh in Play Mode.
+- **Safe editing.** An `● unsaved changes` marker that survives script reloads and entering Play Mode, a Save / Discard prompt when you close the window with unsaved changes, Revert, confirmation before deleting, a warning when a key changes outside the editor while you edit it (for example in Play Mode), and live auto-refresh in Play Mode.
 - **Bulk actions.** Multi-select to copy, export or delete many keys at once. Rename and duplicate single keys.
 - **Live in Play Mode.** Game code can subscribe to `PlayerPrefEvents.Changed` to pick up values you edit while the game runs.
 - **Editor tooling.** The window and all its code are Editor-only. The only thing that ships in builds is one tiny static event class, which never fires there. The tool never touches scenes or assets.
@@ -21,13 +21,13 @@ It depends only on [Newtonsoft JSON](https://docs.unity3d.com/Packages/com.unity
 **Package Manager (git URL)**: *Window ▸ Package Manager ▸ + ▸ Add package from git URL…*
 
 ```
-https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.0
+https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.1
 ```
 
 or add it to `Packages/manifest.json`:
 
 ```json
-"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.0"
+"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.1"
 ```
 
 Requires Unity 2021.3 or newer.
