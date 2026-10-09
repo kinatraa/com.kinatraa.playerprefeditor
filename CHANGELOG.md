@@ -4,6 +4,11 @@ All notable changes to this package are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-09
+
+### Added
+- `PlayerPrefEvents.Changed` (new runtime assembly `kinatraa.PlayerPrefEditor`): raised once per key after the package saves a change (Save, Rename, Delete, Import, Delete All, Undo, Redo), so game code can re-read cached values in Play Mode. Handlers that throw are logged without affecting the change. Handlers are cleared on entering Play Mode. In builds the event never fires.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added
@@ -38,5 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - EditMode tests for JSON round-trips, type validation, invalid input and PlayerPrefs read/write.
 - Basic Usage sample with an importable JSON document.
 
+[0.3.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.3.0
 [0.2.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.2.0
 [0.1.0]: https://github.com/kinatraa/com.kinatraa.playerprefeditor/releases/tag/0.1.0

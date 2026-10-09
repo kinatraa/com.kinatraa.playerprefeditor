@@ -11,7 +11,8 @@ An Editor window for Unity's `PlayerPrefs`. View, search, create, edit, rename, 
 - **Import preview.** See every key that would be added, changed or removed, with before → after values, pick which ones to apply, and choose Merge or Replace. Import from a file, the clipboard, or by dropping a `.json` file on the window.
 - **Safe editing.** An `● unsaved changes` marker, Revert, confirmation before deleting, a warning when a key changes outside the editor while you edit it (for example in Play Mode), and live auto-refresh in Play Mode.
 - **Bulk actions.** Multi-select to copy, export or delete many keys at once. Rename and duplicate single keys.
-- **Editor-only.** All code is in an Editor assembly, so nothing ships in builds. The tool never touches scenes or assets.
+- **Live in Play Mode.** Game code can subscribe to `PlayerPrefEvents.Changed` to pick up values you edit while the game runs.
+- **Editor tooling.** The window and all its code are Editor-only. The only thing that ships in builds is one tiny static event class, which never fires there. The tool never touches scenes or assets.
 
 It depends only on [Newtonsoft JSON](https://docs.unity3d.com/Packages/com.unity.nuget.newtonsoft-json@3.2/manual/index.html) (`com.unity.nuget.newtonsoft-json`), which the Package Manager installs automatically.
 
@@ -20,13 +21,13 @@ It depends only on [Newtonsoft JSON](https://docs.unity3d.com/Packages/com.unity
 **Package Manager (git URL)**: *Window ▸ Package Manager ▸ + ▸ Add package from git URL…*
 
 ```
-https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.2.0
+https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.0
 ```
 
 or add it to `Packages/manifest.json`:
 
 ```json
-"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.2.0"
+"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.0"
 ```
 
 Requires Unity 2021.3 or newer.
@@ -112,6 +113,35 @@ Every key written through this tool is also remembered in a per-project list in 
 **Type detection is best-effort.** PlayerPrefs has no API that returns a key's type, so each key is read with two different defaults per getter (`GetInt`, `GetFloat`, `GetString`) to see which one holds a value, and the OS store's type is used when that is ambiguous. If neither gives an answer, the key is shown as `[unknown]`: pick a type and enter a value to overwrite it.
 
 Tested on macOS with Unity 6. The Windows registry and Linux prefs readers are covered by parser tests but have not been run on those platforms yet.
+
+## React to edits in Play Mode
+
+Saving in the window writes straight into the PlayerPrefs your game reads, so the next `PlayerPrefs.GetInt` call returns the new value. Code that read a value once and cached it won't notice on its own. Subscribe to `PlayerPrefEvents.Changed` to re-read it:
+
+```csharp
+using kinatraa.PlayerPrefEditor;
+using UnityEngine;
+
+public class Settings : MonoBehaviour
+{
+    float _volume;
+
+    void OnEnable() => PlayerPrefEvents.Changed += OnPrefChanged;
+    void OnDisable() => PlayerPrefEvents.Changed -= OnPrefChanged;
+    void Start() => _volume = PlayerPrefs.GetFloat("master_volume", 1f);
+
+    void OnPrefChanged(string key)
+    {
+        if (key == "master_volume") _volume = PlayerPrefs.GetFloat("master_volume", 1f);
+    }
+}
+```
+
+- It fires once per changed key after the change is saved: Save, Rename (old and new key), Delete, Import, Delete All, Undo and Redo. A deleted key fires too, so always read with a default.
+- It runs on the main thread, in Edit Mode as well as Play Mode. A handler that throws is logged and does not affect the change or other handlers.
+- It only fires for changes made through this package, not for `PlayerPrefs.Set*` calls in your own code.
+- Handlers are cleared when Play Mode starts, including with domain reload disabled, so subscribe in `OnEnable` or `Start`.
+- In builds the event exists but never fires, so you can leave the subscription in shipping code.
 
 ## Scripting
 

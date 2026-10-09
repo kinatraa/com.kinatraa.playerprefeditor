@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -499,6 +500,34 @@ namespace kinatraa.PlayerPrefEditor.Tests
             finally
             {
                 history.Clear();
+            }
+        }
+
+        [Test]
+        public void CommitRaisesChangedOncePerKeyEvenWhenAHandlerThrows()
+        {
+            string a = _prefix + "a", b = _prefix + "b", gone = _prefix + "gone";
+            PlayerPrefStore.Write(new PrefEntry(gone, PrefType.Int, 1));
+
+            var seen = new List<string>();
+            Action<string> broken = _ => throw new InvalidOperationException("handler bug");
+            Action<string> record = k => { if (k.StartsWith(_prefix)) seen.Add(k); };
+            PlayerPrefEvents.Changed += broken;
+            PlayerPrefEvents.Changed += record;
+            try
+            {
+                for (int i = 0; i < 3; i++) LogAssert.Expect(LogType.Exception, new Regex("handler bug"));
+                PrefHistory.instance.Commit("events", new[] { new PrefEntry(a, PrefType.Int, 1), new PrefEntry(b, PrefType.String, "x") }, new[] { gone });
+
+                CollectionAssert.AreEquivalent(new[] { a, b, gone }, seen);
+                Assert.AreEqual(1, PlayerPrefs.GetInt(a), "a throwing handler must not undo the save");
+                Assert.AreEqual("events", PrefHistory.instance.UndoLabel, "the step is still recorded");
+            }
+            finally
+            {
+                PlayerPrefEvents.Changed -= broken;
+                PlayerPrefEvents.Changed -= record;
+                PrefHistory.instance.Clear();
             }
         }
 

@@ -1,12 +1,8 @@
 {
-    "name": "kinatraa.PlayerPrefEditor.Editor",
+    "name": "kinatraa.PlayerPrefEditor",
     "rootNamespace": "kinatraa.PlayerPrefEditor",
-    "references": [
-        "kinatraa.PlayerPrefEditor"
-    ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "references": [],
+    "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

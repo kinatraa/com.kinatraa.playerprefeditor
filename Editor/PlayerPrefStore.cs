@@ -112,6 +112,8 @@ namespace kinatraa.PlayerPrefEditor
             tracked.RemoveAll(k => deletes.Contains(k) && !written.Contains(k));
             tracked.AddRange(written.Where(k => !tracked.Contains(k)));
             SaveList(TrackedListKey, tracked);
+
+            foreach (var key in deletes.Union(written)) PlayerPrefEvents.RaiseChanged(key);
         }
 
         /// <summary>Adds keys that already exist in PlayerPrefs to the tracked list, so they are listed on every platform.</summary>

@@ -2,6 +2,7 @@
     "name": "kinatraa.PlayerPrefEditor.Editor.Tests",
     "rootNamespace": "kinatraa.PlayerPrefEditor.Tests",
     "references": [
+        "kinatraa.PlayerPrefEditor",
         "kinatraa.PlayerPrefEditor.Editor",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"

@@ -1,6 +1,6 @@
 # Getting Started
 
-1. Install the package from `https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.2.0` (see the [README](../README.md#install)).
+1. Install the package from `https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.3.0` (see the [README](../README.md#install)).
 2. Check **Project Settings ▸ Player ▸ Company Name / Product Name**. PlayerPrefs are stored per company and product.
 3. Open **Tools ▸ kinatraa ▸ Player Pref Editor**.
 
@@ -21,5 +21,6 @@
 | Back up values | **Export ▾** all, visible or selected keys to a file or the clipboard. |
 | Restore or seed values | **Import ▾** a file or the clipboard, or drop a `.json` file on the window. Review the preview, untick rows, choose Merge or Replace, apply. |
 | Watch values in Play Mode | Leave **More ▾ Auto Refresh in Play Mode** on. |
+| Make the running game pick up an edit | Subscribe to `PlayerPrefEvents.Changed` and re-read the key (see the [README](../README.md#react-to-edits-in-play-mode)). |
 
 See the [README](../README.md#json-format) for the JSON format and platform limitations.
