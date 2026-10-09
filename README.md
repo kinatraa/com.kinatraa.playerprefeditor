@@ -1,13 +1,16 @@
 # kinatraa PlayerPref Editor
 
-An Editor window for Unity's `PlayerPrefs`. View, search, create, edit, delete, import and export every value, and see, edit and exchange each one as formatted JSON (2-space indent).
+An Editor window for Unity's `PlayerPrefs`. View, search, create, edit, rename, delete, import and export every value, and see, edit and exchange each one as formatted JSON (2-space indent). Every change can be undone.
 
-> **Screenshot placeholder:** the Player Pref Editor window (toolbar, key list with type badges, JSON value panel, status line).
+> **Screenshot placeholder:** the Player Pref Editor window (toolbar, key list with value previews and type badges, JSON value panel, status line).
 
-- **Find keys fast.** Live search, a type filter (All / int / float / string / unknown), and an alphabetical list with a `[type]` badge on every key.
-- **Edit as JSON.** Values sit in a monospace JSON field. Invalid JSON and type mismatches show a red error line and nothing is written.
-- **Safe changes.** An `● unsaved changes` marker, Revert, and confirmation dialogs before Delete and Import.
-- **Import / Export.** Export the whole store to a file or the clipboard. Import validates the file and previews how many keys are added, changed and unchanged before applying anything.
+- **Every key, on every desktop Editor.** Keys are read from the OS store on Windows (registry), macOS (preferences plist) and Linux (prefs file), so values your game wrote show up too, with their real type.
+- **Find keys fast.** Live search over keys *and* values (plain text or regex), a type filter, sorting, pinned keys at the top, and a value preview column. Unity's own internal keys are hidden unless you ask for them.
+- **Edit as JSON.** Values sit in a monospace JSON field with live validation. A string that holds JSON can be edited as formatted JSON and is stored back as a string. Changing the type converts the value when it can (`5` → `5.0` → `"5"`).
+- **Undo and redo** for every save, rename, delete, import and Delete All, for the whole Editor session.
+- **Import preview.** See every key that would be added, changed or removed, with before → after values, pick which ones to apply, and choose Merge or Replace. Import from a file, the clipboard, or by dropping a `.json` file on the window.
+- **Safe editing.** An `● unsaved changes` marker, Revert, confirmation before deleting, a warning when a key changes outside the editor while you edit it (for example in Play Mode), and live auto-refresh in Play Mode.
+- **Bulk actions.** Multi-select to copy, export or delete many keys at once. Rename and duplicate single keys.
 - **Editor-only.** All code is in an Editor assembly, so nothing ships in builds. The tool never touches scenes or assets.
 
 It depends only on [Newtonsoft JSON](https://docs.unity3d.com/Packages/com.unity.nuget.newtonsoft-json@3.2/manual/index.html) (`com.unity.nuget.newtonsoft-json`), which the Package Manager installs automatically.
@@ -17,13 +20,13 @@ It depends only on [Newtonsoft JSON](https://docs.unity3d.com/Packages/com.unity
 **Package Manager (git URL)**: *Window ▸ Package Manager ▸ + ▸ Add package from git URL…*
 
 ```
-https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.1.0
+https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.2.0
 ```
 
 or add it to `Packages/manifest.json`:
 
 ```json
-"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.1.0"
+"com.kinatraa.playerprefeditor": "https://github.com/kinatraa/com.kinatraa.playerprefeditor.git#0.2.0"
 ```
 
 Requires Unity 2021.3 or newer.
@@ -34,16 +37,29 @@ Requires Unity 2021.3 or newer.
 
 | Area | What it does |
 |---|---|
-| Toolbar | Search, type filter, **Refresh**, **Add New**, **Import**, **Export**, **Copy All** |
-| Left panel | Keys sorted alphabetically with a `[type]` badge, and `Keys: visible / total` |
-| Right panel | Key (read-only for existing keys), type, JSON value, **Save**, **Revert**, **Copy JSON**, **Delete** |
-| Status line | The result of the last action, or the error |
+| Toolbar | Search, filter menu (type, search values, regex, internal keys, sort), Refresh, Add, Undo, Redo, **Import ▾**, **Export ▾**, **More ▾** |
+| Left panel | Keys with a value preview and a `[type]` badge, pinned keys first. Multi-select with Shift/Ctrl/Cmd. Right-click for Copy, Duplicate, Rename, Pin and Delete. |
+| Right panel | Key, type, JSON value, **Save**, **Revert**, **Copy JSON**, **Pin**, **Duplicate**, **Delete**, or bulk actions when several keys are selected |
+| Status line | The result of the last action or the error, and where keys are read from |
 
-The list reloads when the window gets focus, so values written in Play Mode show up when you come back to it.
+Drag the divider between the panels to resize the list. The window works down to 460 × 280: the list gives way first and the buttons wrap.
+
+### Shortcuts (while the window has focus)
+
+| Keys | Action |
+|---|---|
+| Ctrl/Cmd+S | Save |
+| Ctrl/Cmd+F | Focus search |
+| Ctrl/Cmd+N | Add a new key |
+| F5 | Refresh |
+| Delete, or Cmd+Backspace (in the list) | Delete the selected keys |
+| Ctrl/Cmd+C (in the list) | Copy the selected keys as JSON |
+
+Rebind them under *Edit ▸ Shortcuts ▸ kinatraa*.
 
 ## JSON format
 
-Export, Import, Copy All and Copy JSON all use one schema: an object that maps each key to its type and value.
+Export, Import, Copy and Copy JSON all use one schema: an object that maps each key to its type and value.
 
 ```json
 {
@@ -56,50 +72,70 @@ Export, Import, Copy All and Copy JSON all use one schema: an object that maps e
 | `type` | `value` must be | Example |
 |---|---|---|
 | `int` | a whole number from -2147483648 to 2147483647 (`5.0` is rejected) | `5` |
-| `float` | any number | `0.8` |
+| `float` | a number, or `"NaN"`, `"Infinity"`, `"-Infinity"` | `0.8` |
 | `string` | a JSON string in double quotes | `"Hakien"` |
 
-The value field in the right panel holds only the value (`0.8`, `"Hakien"`), and the type comes from the Type dropdown. A string that contains JSON stays a string: `"{\"lang\":\"en\"}"`.
+The value field in the right panel holds only the value (`0.8`, `"Hakien"`); the type comes from the Type dropdown.
+
+**Strings that hold JSON.** When a string's content is a JSON object or array, **Edit as JSON** shows it formatted. Saving stores it back as a string: compact if the original was on one line, indented if it was multi-line. Untick it to edit the raw JSON string. Numbers inside are re-serialized, so `1.50` is stored as `1.5`.
 
 Validation rules:
 
 - Saving parses the JSON first. A parse error is shown with its line and position, and nothing is written.
-- An Import file is checked in full before anything is written. One invalid entry rejects the whole file. Duplicate keys are rejected too.
+- An import is checked in full before the preview opens. One invalid entry rejects the whole document, and duplicate keys are rejected too.
 - Parsing uses Newtonsoft, which also accepts a few non-standard forms such as single-quoted strings and comments. Everything the tool writes is standard JSON.
+
+## Import and export
+
+- **Import ▾ From File…**, **From Clipboard**, or drop a `.json` file on the window. A preview lists every key as added, changed, unchanged or removed, with its old and new value. Untick rows you don't want, then click **Import N Changes**.
+  - **Merge** adds and updates keys.
+  - **Replace** also deletes keys that are missing from the import. It never deletes Unity's internal keys.
+- **Export ▾** writes all keys, the keys matching the current search and filter, or the selected keys to a file, or copies them to the clipboard.
+- **More ▾ Delete All Keys…** deletes every listed key (internal keys only when they are shown). Like everything else, it can be undone.
+
+Keys of unknown type can't be exported or restored by Undo, because their value can't be read. The status line says how many were skipped.
 
 ## Platform support and known limitations
 
-Unity has no API that lists PlayerPrefs keys, so how keys are found depends on the platform.
+Unity has no API that lists PlayerPrefs keys, so keys are read from where the Editor stores them:
 
-| Editor platform | How keys are listed |
+| Editor platform | Location |
 |---|---|
-| Windows | Read from the registry under `HKCU\Software\Unity\UnityEditor\<companyName>\<productName>` (the Editor's PlayerPrefs location; builds use `HKCU\Software\<companyName>\<productName>`). All keys appear, including ones written by your game or by Unity. |
-| macOS, Linux | Native enumeration is not implemented. The window lists a per-project key list stored in `EditorPrefs`. |
+| Windows | Registry: `HKCU\Software\Unity\UnityEditor\<companyName>\<productName>` (builds use `HKCU\Software\<companyName>\<productName>`) |
+| macOS | `~/Library/Preferences/unity.<companyName>.<productName>.plist`, read through `defaults` so it is always current |
+| Linux | `~/.config/unity3d/<companyName>/<productName>/prefs` |
 
-On macOS and Linux:
+`companyName` and `productName` come from **Project Settings ▸ Player**. If you change them, the Editor uses a new PlayerPrefs location. **More ▾ Show Storage Location** reveals the file (macOS, Linux) and copies the path.
 
-- Every key written through the tool (Save, Import, or the `PlayerPrefStore` API) is added to the list automatically.
-- To show a key your game wrote, click **Add New**, type its name and click **Save**, then choose **Load Existing**.
-- Keys that no longer exist in PlayerPrefs drop off the list on the next refresh.
+Every key written through this tool is also remembered in a per-project list in `EditorPrefs`. That covers keys the OS store doesn't list yet, for example values set in Play Mode before `PlayerPrefs.Save()` runs (Linux only writes the file on save). If the OS store can't be read, the window falls back to that list and says so in the status line. To show a key that isn't listed, click **Add New**, enter its name and **Save**, then choose **Open Existing**.
 
-`companyName` and `productName` come from **Project Settings ▸ Player**. If you change them, PlayerPrefs (and the tracked key list) move to a new location.
+**Type detection is best-effort.** PlayerPrefs has no API that returns a key's type, so each key is read with two different defaults per getter (`GetInt`, `GetFloat`, `GetString`) to see which one holds a value, and the OS store's type is used when that is ambiguous. If neither gives an answer, the key is shown as `[unknown]`: pick a type and enter a value to overwrite it.
 
-**Type detection is best-effort.** PlayerPrefs does not store a type you can query, so the tool reads each key with two different defaults per getter (`GetInt`, `GetFloat`, `GetString`) to see which one holds a value. If that does not give exactly one type, the key is shown as `[unknown]`. Its value can't be read then, so pick a type and enter a value to overwrite it. Keys of unknown type are left out of Export and Copy All, and the status line says how many were skipped.
+Tested on macOS with Unity 6. The Windows registry and Linux prefs readers are covered by parser tests but have not been run on those platforms yet.
 
 ## Scripting
 
-The window is built on two public Editor classes you can call from your own Editor scripts:
+The window is built on public Editor classes you can call from your own Editor scripts:
 
 ```csharp
 using kinatraa.PlayerPrefEditor;
 
-PlayerPrefStore.Write(new PrefEntry("level", PrefType.Int, 5));   // set, Save(), track the key
-PrefEntry e = PlayerPrefStore.Read("level");                      // e.Type == PrefType.Int, e.Value == 5
+// Undoable from the window's Undo button.
+PrefHistory.instance.Commit("Reset progress",
+    new[] { new PrefEntry("level", PrefType.Int, 1) },   // writes
+    new[] { "checkpoint" });                              // deletes
+
+PrefEntry e = PlayerPrefStore.Read("level");              // e.Type == PrefType.Int, e.Value == 1
+List<string> keys = PlayerPrefStore.GetKeys();
 string json = PlayerPrefStore.ExportJson(out int exported, out int skipped);
+
 if (PrefJson.TryParseDocument(json, out var entries, out var error))
-    PlayerPrefStore.Apply(entries);                                // write all, then one Save()
+    ImportPreviewWindow.Open("backup.json", entries, message => Debug.Log(message));
+
 PlayerPrefEditorWindow.Open();
 ```
+
+`PlayerPrefStore.Write`, `Apply`, `Delete` and `Commit` change PlayerPrefs directly, without undo.
 
 ## Samples
 

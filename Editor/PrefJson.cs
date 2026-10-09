@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -20,6 +21,10 @@ namespace kinatraa.PlayerPrefEditor
             Type = type;
             Value = value;
         }
+
+        /// <summary>Same type and value (the key is not compared).</summary>
+        public bool SameValue(PrefEntry other) =>
+            other != null && Type == other.Type && Type != PrefType.Unknown && Equals(Value, other.Value);
     }
 
     /// <summary>
@@ -28,6 +33,9 @@ namespace kinatraa.PlayerPrefEditor
     /// </summary>
     public static class PrefJson
     {
+        // JSON has no literal for these, so they are written as strings.
+        const string NaN = "NaN", PositiveInfinity = "Infinity", NegativeInfinity = "-Infinity";
+
         public static string TypeName(PrefType type)
         {
             switch (type)
@@ -72,15 +80,20 @@ namespace kinatraa.PlayerPrefEditor
         {
             entries = new List<PrefEntry>();
             if (!TryParse(json, out var token, out error)) return false;
-            var parsed = new List<PrefEntry>();
             if (!(token is JObject doc))
             {
                 error = "The root must be a JSON object: { \"key\": { \"type\": ..., \"value\": ... } }.";
                 return false;
             }
 
+            var parsed = new List<PrefEntry>();
             foreach (var p in doc.Properties())
             {
+                if (p.Name.Length == 0)
+                {
+                    error = "Keys must not be empty.";
+                    return false;
+                }
                 if (!(p.Value is JObject item) || item["type"]?.Type != JTokenType.String || !item.ContainsKey("value"))
                 {
                     error = $"\"{p.Name}\": expected {{ \"type\": ..., \"value\": ... }}.";
@@ -107,8 +120,73 @@ namespace kinatraa.PlayerPrefEditor
             return true;
         }
 
-        static JToken ToToken(PrefType type, object value) =>
-            type == PrefType.Unknown || value == null ? JValue.CreateNull() : new JValue(value);
+        /// <summary>
+        /// Rewrites a value's JSON for another type when the value survives the change:
+        /// 5 → 5.0 → "5", "0.8" → 0.8, 2.0 → 2. Returns false when it would not (e.g. "abc" → int).
+        /// </summary>
+        public static bool TryConvertText(string json, PrefType from, PrefType to, out string converted)
+        {
+            converted = null;
+            if (to == PrefType.Unknown || !TryParseValue(json, from, out var value, out _)) return false;
+            if (from == to)
+            {
+                converted = FormatValue(to, value);
+                return true;
+            }
+
+            object result = null;
+            switch (to)
+            {
+                case PrefType.Int:
+                    if (value is float f && !float.IsNaN(f) && !float.IsInfinity(f) && f == System.Math.Floor(f) && f >= -2147483648f && f < 2147483648f)
+                        result = (int)f;
+                    else if (value is string s && int.TryParse(s.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var i))
+                        result = i;
+                    break;
+                case PrefType.Float:
+                    if (value is int n && (int)(float)n == n)
+                        result = (float)n;
+                    else if (value is string s && float.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+                        result = parsed;
+                    break;
+                case PrefType.String:
+                    result = value is float fv ? FloatToString(fv) : System.Convert.ToString(value, CultureInfo.InvariantCulture);
+                    break;
+            }
+            if (result == null) return false;
+            converted = FormatValue(to, result);
+            return true;
+        }
+
+        /// <summary>True when a string value holds a JSON object or array; <paramref name="pretty"/> is it formatted.</summary>
+        public static bool TryExpandEmbedded(string value, out string pretty)
+        {
+            pretty = null;
+            if (string.IsNullOrWhiteSpace(value) || !TryParse(value, out var token, out _)) return false;
+            if (!(token is JObject) && !(token is JArray)) return false;
+            pretty = token.ToString(Formatting.Indented);
+            return true;
+        }
+
+        /// <summary>Turns edited JSON back into the string to store: indented if the original was multi-line, compact otherwise.</summary>
+        public static bool TryCollapseEmbedded(string json, bool indented, out string value, out string error)
+        {
+            value = null;
+            if (!TryParse(json, out var token, out error)) return false;
+            value = token.ToString(indented ? Formatting.Indented : Formatting.None);
+            return true;
+        }
+
+        static string FloatToString(float f) =>
+            float.IsNaN(f) ? NaN : float.IsPositiveInfinity(f) ? PositiveInfinity : float.IsNegativeInfinity(f) ? NegativeInfinity
+            : f.ToString("R", CultureInfo.InvariantCulture);
+
+        static JToken ToToken(PrefType type, object value)
+        {
+            if (type == PrefType.Unknown || value == null) return JValue.CreateNull();
+            if (value is float f && (float.IsNaN(f) || float.IsInfinity(f))) return new JValue(FloatToString(f));
+            return new JValue(value);
+        }
 
         static bool TryParse(string json, out JToken token, out string error)
         {
@@ -154,13 +232,22 @@ namespace kinatraa.PlayerPrefEditor
                         var d = (double)token;
                         if (float.IsInfinity((float)d) && !double.IsInfinity(d))
                         {
-                            error = "float value is out of range.";
+                            error = "float value is out of range (about ±3.4e38).";
                             return false;
                         }
                         value = (float)d;
                         return true;
                     }
-                    error = "float value must be a number, e.g. 0.8.";
+                    if (token.Type == JTokenType.String)
+                    {
+                        switch ((string)token)
+                        {
+                            case NaN: value = float.NaN; return true;
+                            case PositiveInfinity: value = float.PositiveInfinity; return true;
+                            case NegativeInfinity: value = float.NegativeInfinity; return true;
+                        }
+                    }
+                    error = "float value must be a number, e.g. 0.8 (or \"NaN\", \"Infinity\", \"-Infinity\").";
                     return false;
 
                 case PrefType.String:

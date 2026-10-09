@@ -1,8 +1,8 @@
 {
   "name": "com.kinatraa.playerprefeditor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "kinatraa PlayerPref Editor",
-  "description": "Editor window to view, search, create, edit, delete, import and export PlayerPrefs. Every value is shown, edited and exchanged as formatted JSON. Editor-only: nothing ships in builds.",
+  "description": "Editor window to view, search, create, edit, rename, delete, import and export PlayerPrefs as formatted JSON. Lists every key from the OS store on Windows, macOS and Linux, with undo/redo, an import preview with merge or replace, value search, bulk actions and embedded-JSON editing. Editor-only: nothing ships in builds.",
   "unity": "2021.3",
   "documentationUrl": "https://github.com/kinatraa/com.kinatraa.playerprefeditor/blob/main/Documentation~/GettingStarted.md",
   "changelogUrl": "https://github.com/kinatraa/com.kinatraa.playerprefeditor/blob/main/CHANGELOG.md",

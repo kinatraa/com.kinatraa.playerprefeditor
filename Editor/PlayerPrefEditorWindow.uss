@@ -1,0 +1,4 @@
+/* Resize cursor for the list/editor divider (C# cannot set editor cursors). */
+.ppe-divider-grip {
+    cursor: resize-horizontal;
+}
