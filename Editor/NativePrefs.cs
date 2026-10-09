@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Xml;
 using UnityEditor;
 using UnityEngine;
@@ -32,21 +34,43 @@ namespace kinatraa.PlayerPrefEditor
             {
                 switch (Application.platform)
                 {
-                    case RuntimePlatform.WindowsEditor: return $@"HKEY_CURRENT_USER\Software\Unity\UnityEditor\{Company}\{Product}";
+                    case RuntimePlatform.WindowsEditor: return @"HKEY_CURRENT_USER\" + RegistryPath;
                     case RuntimePlatform.OSXEditor: return Path.Combine(Home, "Library", "Preferences", MacDomain + ".plist");
-                    case RuntimePlatform.LinuxEditor: return LinuxPrefsPath;
+                    case RuntimePlatform.LinuxEditor:
+                        var paths = LinuxPrefsPaths();
+                        return Array.Find(paths, File.Exists) ?? paths[0];
                     default: return null;
                 }
             }
         }
 
-        static string LinuxPrefsPath
+        static string RegistryPath => $@"Software\Unity\UnityEditor\{Company}\{Product}";
+
+        // Unity documents ~/.config/unity3d for Linux PlayerPrefs; some Editor versions use ~/.local/share/unity3d.
+        // Both are read, and PlayerPrefs.HasKey filters out anything that is not a live key.
+        static string[] LinuxPrefsPaths()
         {
-            get
+            var config = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+            if (string.IsNullOrEmpty(config)) config = Path.Combine(Home, ".config");
+            var data = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+            if (string.IsNullOrEmpty(data)) data = Path.Combine(Home, ".local", "share");
+            return new[]
             {
-                var config = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-                if (string.IsNullOrEmpty(config)) config = Path.Combine(Home, ".config");
-                return Path.Combine(config, "unity3d", Company, Product, "prefs");
+                Path.Combine(config, "unity3d", Company, Product, "prefs"),
+                Path.Combine(data, "unity3d", Company, Product, "prefs"),
+            };
+        }
+
+        /// <summary>The result of reading the OS store: <see cref="Keys"/> is null when it could not be read, and <see cref="Error"/> says why.</summary>
+        public sealed class Snapshot
+        {
+            public readonly Dictionary<string, PrefType> Keys;
+            public readonly string Error;
+
+            public Snapshot(Dictionary<string, PrefType> keys, string error)
+            {
+                Keys = keys;
+                Error = error;
             }
         }
 
@@ -56,40 +80,71 @@ namespace kinatraa.PlayerPrefEditor
         /// </summary>
         public static Dictionary<string, PrefType> ReadKeys(out string error)
         {
-            error = null;
-            try
+            var snapshot = CreateReader()();
+            error = snapshot.Error;
+            return snapshot.Keys;
+        }
+
+        /// <summary>Reads the OS store on a worker thread, so a refresh never blocks the Editor (the macOS read starts a process).</summary>
+        public static Task<Snapshot> ReadKeysAsync() => Task.Run(CreateReader());
+
+        // Unity APIs only work on the main thread, so every path is resolved here and the returned reader touches none.
+        static Func<Snapshot> CreateReader()
+        {
+            switch (Application.platform)
             {
-                switch (Application.platform)
+                case RuntimePlatform.WindowsEditor:
                 {
-                    case RuntimePlatform.WindowsEditor: return ReadRegistry();
-                    case RuntimePlatform.OSXEditor: return ReadMac(out error);
-                    case RuntimePlatform.LinuxEditor:
-                        return File.Exists(LinuxPrefsPath) ? ParseLinuxPrefs(File.ReadAllText(LinuxPrefsPath)) : new Dictionary<string, PrefType>();
-                    default: return new Dictionary<string, PrefType>();
+                    var path = RegistryPath;
+                    return () => Guard(() => ReadRegistry(path));
                 }
-            }
-            catch (Exception e)
-            {
-                error = e.Message;
-                return null;
+                case RuntimePlatform.OSXEditor:
+                {
+                    var domain = MacDomain;
+                    return () => Guard(() => ReadMac(domain));
+                }
+                case RuntimePlatform.LinuxEditor:
+                {
+                    var paths = LinuxPrefsPaths();
+                    return () => Guard(() => ReadLinux(paths));
+                }
+                default:
+                    return () => new Snapshot(new Dictionary<string, PrefType>(), null);
             }
         }
 
-        static Dictionary<string, PrefType> ReadMac(out string error)
+        static Snapshot Guard(Func<Snapshot> read)
+        {
+            try
+            {
+                return read();
+            }
+            catch (Exception e)
+            {
+                return new Snapshot(null, e.Message);
+            }
+        }
+
+        static Snapshot ReadMac(string domain)
         {
             // `defaults` reads through cfprefsd, so it sees values the Editor saved moments ago.
-            if (Run("/usr/bin/defaults", $"export {Quote(MacDomain)} -", out var stdout, out var stderr))
-            {
-                error = null;
-                return ParsePlist(stdout);
-            }
+            if (Run("/usr/bin/defaults", $"export {Quote(domain)} -", out var stdout, out var stderr))
+                return new Snapshot(ParsePlist(stdout), null);
             if (stderr.IndexOf("does not exist", StringComparison.OrdinalIgnoreCase) >= 0)
+                return new Snapshot(new Dictionary<string, PrefType>(), null);
+            return new Snapshot(null, "defaults export failed: " + stderr.Trim());
+        }
+
+        static Snapshot ReadLinux(string[] paths)
+        {
+            var result = new Dictionary<string, PrefType>(StringComparer.Ordinal);
+            foreach (var path in paths)
             {
-                error = null;
-                return new Dictionary<string, PrefType>();
+                if (!File.Exists(path)) continue;
+                foreach (var pair in ParseLinuxPrefs(File.ReadAllText(path, Encoding.UTF8)))
+                    if (!result.ContainsKey(pair.Key)) result[pair.Key] = pair.Value;
             }
-            error = "defaults export failed: " + stderr.Trim();
-            return null;
+            return new Snapshot(result, null);
         }
 
         /// <summary>Parses an XML property list: plist › dict › (key, value)*.</summary>
@@ -141,13 +196,13 @@ namespace kinatraa.PlayerPrefEditor
             return m.Success ? m.Groups[1].Value : valueName;
         }
 
-        static Dictionary<string, PrefType> ReadRegistry()
+        static Snapshot ReadRegistry(string path)
         {
             var result = new Dictionary<string, PrefType>(StringComparer.Ordinal);
 #if UNITY_EDITOR_WIN
-            using (var root = Microsoft.Win32.Registry.CurrentUser.OpenSubKey($@"Software\Unity\UnityEditor\{Company}\{Product}"))
+            using (var root = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(path))
             {
-                if (root == null) return result;
+                if (root == null) return new Snapshot(result, null);
                 foreach (var name in root.GetValueNames())
                 {
                     // Strings are stored as binary; ints and floats both come back as numbers, so leave those to detection.
@@ -156,7 +211,7 @@ namespace kinatraa.PlayerPrefEditor
                 }
             }
 #endif
-            return result;
+            return new Snapshot(result, null);
         }
 
         static XmlDocument LoadXml(string xml)
@@ -177,13 +232,15 @@ namespace kinatraa.PlayerPrefEditor
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
                 CreateNoWindow = true,
             };
             using (var p = Process.Start(psi))
             {
                 var output = p.StandardOutput.ReadToEndAsync();
                 var errors = p.StandardError.ReadToEndAsync();
-                if (!p.WaitForExit(5000))
+                if (!p.WaitForExit(3000))
                 {
                     try { p.Kill(); } catch (InvalidOperationException) { }
                     stdout = "";

@@ -18,6 +18,8 @@ namespace kinatraa.PlayerPrefEditor
             public string Label;
             public string Writes; // PrefJson document
             public List<string> Deletes = new List<string>();
+            // Keys that existed but whose value could not be read (unknown type), so this step cannot restore them.
+            public List<string> Unreadable = new List<string>();
         }
 
         const int Limit = 100;
@@ -33,11 +35,23 @@ namespace kinatraa.PlayerPrefEditor
         public string UndoLabel => CanUndo ? _undo[_undo.Count - 1].Label : null;
         public string RedoLabel => CanRedo ? _redo[_redo.Count - 1].Label : null;
 
+        /// <summary>
+        /// Keys the last <see cref="Commit"/>, <see cref="Undo"/> or <see cref="Redo"/> could not make restorable or restore:
+        /// their earlier value had an unknown type and could not be read. Empty when everything was covered.
+        /// </summary>
+        public IReadOnlyList<string> LastUnrestorable => _lastUnrestorable;
+
+        List<string> _lastUnrestorable = new List<string>();
+
+        // Tests swap this to simulate a value whose type can't be detected; the Editor's own PlayerPrefs never produce one on macOS.
+        internal static Func<string, PrefEntry> Reader = PlayerPrefStore.Read;
+
         /// <summary>Deletes, writes and saves (see <see cref="PlayerPrefStore.Commit"/>) as one undoable step.</summary>
         public void Commit(string label, IReadOnlyCollection<PrefEntry> writes, IReadOnlyCollection<string> deletes)
         {
             var inverse = Capture(label, writes.Select(e => e.Key).Concat(deletes));
             PlayerPrefStore.Commit(writes, deletes); // throws before changing anything, so nothing is recorded
+            _lastUnrestorable = inverse.Unreadable;
             Push(_undo, inverse);
             _redo.Clear();
             Changed?.Invoke();
@@ -62,10 +76,13 @@ namespace kinatraa.PlayerPrefEditor
         {
             if (from.Count == 0) return null;
             var step = from[from.Count - 1];
+            // Never apply half a step: a damaged one stays where it is.
+            if (!PrefJson.TryParseDocument(step.Writes, out var writes, out var error))
+                throw new InvalidOperationException($"\"{step.Label}\" could not be applied, its saved values are damaged: {error}");
+            var inverse = Capture(step.Label, writes.Select(e => e.Key).Concat(step.Deletes).Concat(step.Unreadable));
+            PlayerPrefStore.Commit(writes, step.Deletes); // throws before changing anything
             from.RemoveAt(from.Count - 1);
-            PrefJson.TryParseDocument(step.Writes, out var writes, out _);
-            var inverse = Capture(step.Label, writes.Select(e => e.Key).Concat(step.Deletes));
-            PlayerPrefStore.Commit(writes, step.Deletes);
+            _lastUnrestorable = step.Unreadable;
             Push(to, inverse);
             Changed?.Invoke();
             return step.Label;
@@ -77,10 +94,10 @@ namespace kinatraa.PlayerPrefEditor
             var writes = new List<PrefEntry>();
             foreach (var key in keys.Distinct())
             {
-                var current = PlayerPrefStore.Read(key);
+                var current = Reader(key);
                 if (current == null) step.Deletes.Add(key);
-                // ponytail: a key of unknown type can't be read back, so its old value can't be restored.
-                else if (current.Type != PrefType.Unknown) writes.Add(current);
+                else if (current.Type == PrefType.Unknown) step.Unreadable.Add(key);
+                else writes.Add(current);
             }
             step.Writes = PrefJson.FormatDocument(writes);
             return step;

@@ -2,18 +2,22 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEditor.ShortcutManagement;
 using UnityEditor.UIElements;
 using UnityEngine;
 using UnityEngine.UIElements;
+using Severity = kinatraa.PlayerPrefEditor.PrefStyles.Severity;
 
 namespace kinatraa.PlayerPrefEditor
 {
-    public class PlayerPrefEditorWindow : EditorWindow
+    public class PlayerPrefEditorWindow : EditorWindow, IHasCustomMenu
     {
         const string SettingsPrefix = "kinatraa.PlayerPrefEditor.Window.";
         const float LeftMin = 150, RightMin = 230;
+        // Above this many characters, validation waits for a pause in typing and JSON strings open as plain text.
+        const int LargeText = 100_000;
         static readonly List<string> TypeChoices = new List<string> { "int", "float", "string", "unknown" };
 
         // Survive script reloads through window serialization.
@@ -39,26 +43,37 @@ namespace kinatraa.PlayerPrefEditor
         readonly List<PrefEntry> _visible = new List<PrefEntry>();
         HashSet<string> _pinned = new HashSet<string>();
         bool _committing, _wideList = true;
+        Task<NativePrefs.Snapshot> _pendingRead;
 
         // Detail editor. _editing is the stored entry the editor was opened with; the "unsaved" check compares against it.
         PrefEntry _editing;
         bool _isNew, _renaming, _embedded, _embeddedIndented;
         string _savedPlain, _savedEmbedded;
-        string _externalNote;
+        bool _externalChange;
+        string _typeNote;
+        IVisualElementScheduledItem _pendingValidation;
 
         ToolbarSearchField _search;
         ToolbarMenu _filterMenu;
         ToolbarButton _undo, _redo;
         VisualElement _body, _left;
         ListView _list;
-        Label _count, _searchError, _status, _source;
+        Label _count;
+        PrefBanner _searchError;
+        VisualElement _listEmpty, _listEmptyActions;
+        Label _listEmptyTitle, _listEmptyText;
+
         VisualElement _emptyPane, _multiPane, _detail;
-        Label _multiLabel;
+        Label _multiTitle, _multiText;
+        Label _keyTitle, _keyLabel, _info, _dirty;
         TextField _key, _value;
+        Button _menuButton, _format, _save, _revert;
         DropdownField _type;
-        Button _rename, _format, _save, _revert, _copy, _pin, _duplicate, _delete;
         Toggle _embedToggle;
-        Label _info, _dirty, _warning, _error;
+        PrefBanner _problem, _notice;
+
+        VisualElement _statusIcon;
+        Label _status, _source;
 
         bool IsDirty =>
             _editing != null &&
@@ -101,57 +116,79 @@ namespace kinatraa.PlayerPrefEditor
             if (_list != null && (change == PlayModeStateChange.EnteredPlayMode || change == PlayModeStateChange.EnteredEditMode)) Reload();
         }
 
+        /// <summary>Items in the window's ⋮ tab menu: settings and rarely used actions.</summary>
+        public void AddItemsToMenu(GenericMenu menu)
+        {
+            menu.AddItem(new GUIContent("Auto Refresh in Play Mode"), _autoRefresh, () =>
+            {
+                _autoRefresh = !_autoRefresh;
+                SaveSettings();
+            });
+            menu.AddItem(new GUIContent("Show Unity Internal Keys"), _filter.ShowInternal, () =>
+            {
+                _filter.ShowInternal = !_filter.ShowInternal;
+                SaveSettings();
+                ApplyFilter();
+            });
+            menu.AddSeparator("");
+            if (ExportScope().Count > 0) menu.AddItem(new GUIContent("Delete All Keys…"), false, DeleteAll);
+            else menu.AddDisabledItem(new GUIContent("Delete All Keys…"));
+            if (PrefHistory.instance.CanUndo || PrefHistory.instance.CanRedo)
+                menu.AddItem(new GUIContent("Clear Undo History"), false, () => PrefHistory.instance.Clear());
+            else menu.AddDisabledItem(new GUIContent("Clear Undo History"));
+            menu.AddSeparator("");
+            menu.AddItem(new GUIContent("Show Storage Location"), false, ShowStorageLocation);
+            menu.AddItem(new GUIContent("Documentation"), false, () => Application.OpenURL("https://github.com/kinatraa/com.kinatraa.playerprefeditor#readme"));
+        }
+
         void CreateGUI()
         {
-            titleContent = new GUIContent("Player Pref Editor");
+            titleContent = new GUIContent("Player Pref Editor", PrefStyles.FindIcon("SaveAs"));
             minSize = new Vector2(LeftMin + RightMin + 80, 280);
             LoadSettings();
 
             var root = rootVisualElement;
+            PrefStyles.ApplyTheme(root);
             root.Add(BuildToolbar());
-
-            var sheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/com.kinatraa.playerprefeditor/Editor/PlayerPrefEditorWindow.uss");
-            if (sheet != null) root.styleSheets.Add(sheet);
             root.Add(BuildBody());
-
-            _status = new Label().Ellipsis();
-            _status.style.flexGrow = 1;
-            _source = new Label { style = { color = PrefStyles.Dim, marginLeft = 8, flexShrink = 0 } };
-            var statusBar = PrefStyles.Row(_status, _source);
-            statusBar.style.paddingLeft = statusBar.style.paddingRight = 4;
-            statusBar.style.height = 20;
-            statusBar.style.borderTopWidth = 1;
-            statusBar.style.borderTopColor = new Color(0, 0, 0, 0.25f);
-            root.Add(statusBar);
+            root.Add(BuildStatusBar());
 
             root.RegisterCallback<DragUpdatedEvent>(OnDragUpdated);
             root.RegisterCallback<DragPerformEvent>(OnDragPerform);
-            root.schedule.Execute(() =>
-            {
-                if (_autoRefresh && EditorApplication.isPlaying) Reload();
-            }).Every(1000);
+            root.schedule.Execute(AutoRefresh).Every(500);
 
             Reload();
             var restore = _selection.ToList();
             if (RestoreDraft()) return;
             if (restore.Count == 1 && _all.Find(e => e.Key == restore[0]) is PrefEntry entry) Show(entry, false);
             else UpdatePanes();
-            SetStatus(PlayerPrefStore.LastNativeError != null
-                ? "Could not read the OS store (" + PlayerPrefStore.LastNativeError + "). Showing keys written with this tool."
-                : "Ready. Drop a .json file here to import it.", PlayerPrefStore.LastNativeError != null);
+        }
+
+        /// <summary>Play Mode refresh. The OS store is read on a worker thread so the game never stalls; values are read when it lands.</summary>
+        void AutoRefresh()
+        {
+            if (!_autoRefresh || !EditorApplication.isPlaying) return;
+            if (_pendingRead == null)
+            {
+                _pendingRead = NativePrefs.ReadKeysAsync();
+                return;
+            }
+            if (!_pendingRead.IsCompleted) return;
+            var snapshot = _pendingRead.Status == TaskStatus.RanToCompletion
+                ? _pendingRead.Result
+                : new NativePrefs.Snapshot(null, _pendingRead.Exception?.GetBaseException().Message);
+            _pendingRead = null;
+            Reload(snapshot);
         }
 
         /// <summary>List, draggable divider, editor. The list keeps the width the user dragged it to and only shrinks while the window is too narrow.</summary>
         VisualElement BuildBody()
         {
-            _body = new VisualElement { style = { flexDirection = FlexDirection.Row, flexGrow = 1, flexShrink = 1 } };
-            _left = BuildList();
-            _left.style.flexShrink = 0;
-            _body.Add(_left);
+            _body = PrefStyles.Box("ppe-body");
+            _body.Add(_left = BuildList());
 
-            var divider = new VisualElement { style = { width = 1, flexShrink = 0, backgroundColor = new Color(0, 0, 0, 0.3f) } };
-            var grip = new VisualElement { style = { position = Position.Absolute, left = -3, width = 7, top = 0, bottom = 0 } };
-            grip.AddToClassList("ppe-divider-grip");
+            var divider = PrefStyles.Box("ppe-divider");
+            var grip = PrefStyles.Box("ppe-divider-grip");
             float startX = 0, startWidth = 0;
             grip.RegisterCallback<PointerDownEvent>(e =>
             {
@@ -176,9 +213,7 @@ namespace kinatraa.PlayerPrefEditor
             divider.Add(grip);
             _body.Add(divider);
 
-            var right = BuildRight();
-            right.style.flexShrink = 1;
-            _body.Add(right);
+            _body.Add(BuildRight());
             _body.RegisterCallback<GeometryChangedEvent>(_ => ApplyListWidth());
             return _body;
         }
@@ -226,14 +261,15 @@ namespace kinatraa.PlayerPrefEditor
 
         VisualElement BuildToolbar()
         {
-            var toolbar = new Toolbar();
+            var toolbar = new Toolbar().Classes("ppe-toolbar");
+            toolbar.Add(PrefStyles.IconButton("Toolbar Plus", "New", "New key (Ctrl/Cmd+N)", AddNew));
+            toolbar.Add(PrefStyles.IconButton("Refresh", "Refresh", "Reload from PlayerPrefs (F5)", () =>
+            {
+                Reload();
+                SetStatus("Refreshed.");
+            }));
 
-            _search = new ToolbarSearchField { tooltip = "Search keys and values (Ctrl/Cmd+F)" };
-            _search.style.flexGrow = 1;
-            _search.style.flexShrink = 1;
-            _search.style.minWidth = 70;
-            _search.style.width = StyleKeyword.Auto;
-            _search.style.maxWidth = 420;
+            _search = new ToolbarSearchField { tooltip = "Search keys and values (Ctrl/Cmd+F)" }.Classes("ppe-search");
             _search.SetValueWithoutNotify(_query);
             _search.RegisterValueChangedCallback(e =>
             {
@@ -242,10 +278,9 @@ namespace kinatraa.PlayerPrefEditor
             });
             toolbar.Add(_search);
 
-            _filterMenu = new ToolbarMenu { tooltip = "Type filter, search options and sort order" };
-            _filterMenu.style.flexShrink = 0;
+            _filterMenu = new ToolbarMenu { tooltip = "Filter by type, search options and sort order" };
             var menu = _filterMenu.menu;
-            AddTypeFilter(menu, "All types", null);
+            AddTypeFilter(menu, "All Types", null);
             foreach (var t in new[] { PrefType.Int, PrefType.Float, PrefType.String, PrefType.Unknown })
                 AddTypeFilter(menu, PrefJson.TypeName(t), t);
             menu.AppendSeparator();
@@ -259,53 +294,28 @@ namespace kinatraa.PlayerPrefEditor
             toolbar.Add(_filterMenu);
 
             toolbar.Add(new ToolbarSpacer { flex = true });
-            toolbar.Add(Fixed(PrefStyles.IconButton("Refresh", "Refresh", "Reload from PlayerPrefs (F5)", () =>
-            {
-                Reload();
-                SetStatus("Refreshed.");
-            })));
-            toolbar.Add(Fixed(PrefStyles.IconButton("Toolbar Plus", "Add", "Add a new key (Ctrl/Cmd+N)", AddNew)));
-            toolbar.Add(_undo = Fixed(new ToolbarButton(Undo) { text = "Undo" }));
-            toolbar.Add(_redo = Fixed(new ToolbarButton(Redo) { text = "Redo" }));
+            toolbar.Add(_undo = new ToolbarButton(Undo) { text = "Undo" });
+            toolbar.Add(_redo = new ToolbarButton(Redo) { text = "Redo" });
 
-            var import = Fixed(new ToolbarMenu { text = "Import", tooltip = "Import a JSON document (you can also drop a .json file on the window)" });
+            var import = new ToolbarMenu { text = "Import", tooltip = "Import a JSON document. You can also drop a .json file on the window." };
             import.menu.AppendAction("From File…", _ => ImportFromFile());
-            import.menu.AppendAction("From Clipboard", _ => ImportText(EditorGUIUtility.systemCopyBuffer, "clipboard"));
+            import.menu.AppendAction("From Clipboard", _ => ImportText(EditorGUIUtility.systemCopyBuffer, "the clipboard"));
             toolbar.Add(import);
 
-            var export = Fixed(new ToolbarMenu { text = "Export", tooltip = "Export or copy as JSON" });
-            export.menu.AppendAction("All Keys to File…", _ => ExportToFile(ExportScope(), "playerprefs.json"), _ => Status(_all.Count > 0));
+            var export = new ToolbarMenu { text = "Export", tooltip = "Save or copy keys as JSON" };
+            export.menu.AppendAction("All Keys to File…", _ => ExportToFile(ExportScope(), "playerprefs.json"), _ => Status(ExportScope().Count > 0));
             export.menu.AppendAction("Visible Keys to File…", _ => ExportToFile(_visible, "playerprefs-filtered.json"), _ => Status(_visible.Count > 0));
             export.menu.AppendAction("Selected Keys to File…", _ => ExportToFile(SelectedEntries(), "playerprefs-selection.json"), _ => Status(_selection.Count > 0));
             export.menu.AppendSeparator();
-            export.menu.AppendAction("Copy All as JSON", _ => CopyEntries(ExportScope(), "all"), _ => Status(_all.Count > 0));
-            export.menu.AppendAction("Copy Selected as JSON", _ => CopyEntries(SelectedEntries(), "selected"), _ => Status(_selection.Count > 0));
+            export.menu.AppendAction("Copy All as JSON", _ => CopyEntries(ExportScope(), "all keys"), _ => Status(ExportScope().Count > 0));
+            export.menu.AppendAction("Copy Selected as JSON", _ => CopyEntries(SelectedEntries(), "the selection"), _ => Status(_selection.Count > 0));
             toolbar.Add(export);
-
-            var more = Fixed(new ToolbarMenu { text = "More", tooltip = "More actions" });
-            more.menu.AppendAction("Auto Refresh in Play Mode", _ =>
-            {
-                _autoRefresh = !_autoRefresh;
-                SaveSettings();
-            }, _ => _autoRefresh ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
-            more.menu.AppendSeparator();
-            more.menu.AppendAction("Delete All Keys…", _ => DeleteKeys(ExportScope().Select(e => e.Key).ToList(), "all keys"), _ => Status(_all.Count > 0));
-            more.menu.AppendAction("Clear Undo History", _ => PrefHistory.instance.Clear(), _ => Status(PrefHistory.instance.CanUndo || PrefHistory.instance.CanRedo));
-            more.menu.AppendSeparator();
-            more.menu.AppendAction("Show Storage Location", _ => ShowStorageLocation());
-            more.menu.AppendAction("Documentation", _ => Application.OpenURL("https://github.com/kinatraa/com.kinatraa.playerprefeditor#readme"));
-            toolbar.Add(more);
-
             return toolbar;
         }
 
-        static T Fixed<T>(T e) where T : VisualElement
-        {
-            e.style.flexShrink = 0;
-            return e;
-        }
-
         static DropdownMenuAction.Status Status(bool enabled) => enabled ? DropdownMenuAction.Status.Normal : DropdownMenuAction.Status.Disabled;
+
+        static DropdownMenuAction.Status Check(bool on) => on ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal;
 
         void AddTypeFilter(DropdownMenu menu, string name, PrefType? type)
         {
@@ -314,7 +324,7 @@ namespace kinatraa.PlayerPrefEditor
                 _filter.Type = type;
                 SaveSettings();
                 ApplyFilter();
-            }, _ => _filter.Type == type ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
+            }, _ => Check(_filter.Type == type));
         }
 
         void AddToggle(DropdownMenu menu, string name, Func<bool> get, Action<bool> set)
@@ -324,7 +334,7 @@ namespace kinatraa.PlayerPrefEditor
                 set(!get());
                 SaveSettings();
                 ApplyFilter();
-            }, _ => get() ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
+            }, _ => Check(get()));
         }
 
         void AddSort(DropdownMenu menu, string name, SortMode mode)
@@ -334,29 +344,26 @@ namespace kinatraa.PlayerPrefEditor
                 _filter.Sort = mode;
                 SaveSettings();
                 ApplyFilter();
-            }, _ => _filter.Sort == mode ? DropdownMenuAction.Status.Checked : DropdownMenuAction.Status.Normal);
+            }, _ => Check(_filter.Sort == mode));
         }
 
         // ---------- list ----------
 
         VisualElement BuildList()
         {
-            var left = new VisualElement { style = { minWidth = LeftMin, overflow = Overflow.Hidden } };
-            _count = new Label { style = { unityFontStyleAndWeight = FontStyle.Bold } }.Ellipsis();
-            _count.style.flexGrow = 1;
-            var header = PrefStyles.Row(_count);
-            header.style.paddingLeft = header.style.paddingRight = 4;
-            header.style.height = 20;
-            left.Add(header);
-            _searchError = new Label { style = { color = PrefStyles.Error, paddingLeft = 4, whiteSpace = WhiteSpace.Normal, display = DisplayStyle.None } };
+            var left = PrefStyles.Box("ppe-list-pane");
+            _count = PrefStyles.Text("", "ppe-list-count").Ellipsis();
+            _count.AddToClassList("ppe-grow");
+            left.Add(PrefStyles.Row(_count).Classes("ppe-list-header"));
+            _searchError = new PrefBanner();
+            _searchError.style.marginLeft = _searchError.style.marginRight = 4;
             left.Add(_searchError);
 
-            _list = new ListView(_visible, 20, MakeRow, BindRow)
+            _list = new ListView(_visible, 22, MakeRow, BindRow)
             {
                 selectionType = SelectionType.Multiple,
                 showAlternatingRowBackgrounds = AlternatingRowBackground.ContentOnly,
-            };
-            _list.style.flexGrow = 1;
+            }.Classes("ppe-list");
 #if UNITY_2022_2_OR_NEWER
             _list.selectionChanged += _ => OnListSelection();
 #else
@@ -365,6 +372,13 @@ namespace kinatraa.PlayerPrefEditor
             _list.RegisterCallback<KeyDownEvent>(OnListKeyDown);
             _list.AddManipulator(new ContextualMenuManipulator(BuildContextMenu));
             left.Add(_list);
+
+            _listEmpty = PrefStyles.Box("ppe-empty");
+            _listEmpty.Add(_listEmptyTitle = PrefStyles.Text("", "ppe-empty-title"));
+            _listEmpty.Add(_listEmptyText = PrefStyles.Text("", "ppe-empty-text", "ppe-dim"));
+            _listEmpty.Add(_listEmptyActions = PrefStyles.Box("ppe-empty-actions"));
+            left.Add(_listEmpty);
+
             // Show the value preview column only when the list is wide enough to read it.
             left.RegisterCallback<GeometryChangedEvent>(e =>
             {
@@ -378,13 +392,11 @@ namespace kinatraa.PlayerPrefEditor
 
         VisualElement MakeRow()
         {
-            var pin = new Label("●") { name = "pin", tooltip = "Pinned", style = { width = 10, flexShrink = 0, fontSize = 8, color = PrefStyles.Warning, unityTextAlign = TextAnchor.MiddleCenter } };
-            var key = new Label { name = "key", style = { flexBasis = new Length(55, LengthUnit.Percent), flexGrow = 1 } }.Ellipsis();
-            var preview = new Label { name = "preview", style = { flexBasis = new Length(45, LengthUnit.Percent), flexGrow = 1, color = PrefStyles.Dim, marginLeft = 6, unityFontDefinition = new StyleFontDefinition(PrefStyles.Monospace), fontSize = 11 } }.Ellipsis();
-            var badge = new Label { name = "badge", style = { unityFontStyleAndWeight = FontStyle.Bold, marginLeft = 4, flexShrink = 0 } };
-            var row = PrefStyles.Row(pin, key, preview, badge);
-            row.style.paddingRight = 4;
-            row.style.height = 20;
+            var row = PrefStyles.Box("ppe-key-row");
+            row.Add(PrefStyles.Icon("Favorite", "ppe-pin").Classes("pin"));
+            row.Add(PrefStyles.Text("", "ppe-key-name").Ellipsis());
+            row.Add(PrefStyles.Text("", "ppe-key-preview").Ellipsis().Mono());
+            row.Add(PrefStyles.TypePill(PrefType.Unknown));
             // Right-clicking a row that is not selected selects it, so the context menu acts on it.
             row.RegisterCallback<PointerDownEvent>(e =>
             {
@@ -398,78 +410,114 @@ namespace kinatraa.PlayerPrefEditor
         {
             var e = _visible[index];
             row.userData = index;
-            row.Q<Label>("pin").style.visibility = _pinned.Contains(e.Key) ? Visibility.Visible : Visibility.Hidden;
-            var key = row.Q<Label>("key");
+            bool pinned = _pinned.Contains(e.Key);
+            var pin = row.Q(className: "pin");
+            pin.style.display = pinned ? DisplayStyle.Flex : DisplayStyle.None;
+            pin.tooltip = pinned ? "Pinned" : "";
+            var key = row.Q<Label>(className: "ppe-key-name");
             key.text = e.Key;
             key.tooltip = e.Key;
-            var preview = row.Q<Label>("preview");
-            preview.text = PrefFilter.Preview(e);
+            var preview = row.Q<Label>(className: "ppe-key-preview");
+            preview.text = e.Type == PrefType.Unknown ? "unreadable" : PrefFilter.Preview(e);
             preview.style.display = _wideList ? DisplayStyle.Flex : DisplayStyle.None;
-            var badge = row.Q<Label>("badge");
-            badge.text = $"[{PrefJson.TypeName(e.Type)}]";
-            badge.style.color = PrefStyles.TypeColor(e.Type);
+            PrefStyles.SetType(row.Q<Label>(className: "ppe-pill"), e.Type);
         }
 
-        void Reload()
+        void Reload() => Reload(null);
+
+        /// <summary>Re-reads every key. <paramref name="native"/> is an OS store snapshot already read off the main thread, or null to read it now.</summary>
+        void Reload(NativePrefs.Snapshot native)
         {
-            _all = PlayerPrefStore.ReadAll();
+            _all = native != null ? PlayerPrefStore.ReadAll(native) : PlayerPrefStore.ReadAll();
             _pinned = PlayerPrefStore.GetPinned();
             _selection.RemoveAll(k => _all.All(e => e.Key != k));
 
             if (_editing != null && !_isNew)
             {
                 var current = _all.Find(e => e.Key == _editing.Key);
-                if (!IsDirty)
+                if (!IsDirty && !_renaming)
                 {
                     // Only reopen when the stored value moved, so a refresh never disturbs the field being edited.
                     if (current == null) ClearEditor();
                     else if (!Same(current, _editing)) Show(current, false);
                 }
-                else _externalNote = ExternalNote(current, _editing) ?? _externalNote;
+                else _externalChange = !Same(current, _editing);
             }
 
-            _source.text = SourceText();
-            _source.tooltip = NativePrefs.Location;
+            UpdateSource();
             ApplyFilter();
             UpdateUndoButtons();
             UpdatePanes();
         }
 
-        static string ExternalNote(PrefEntry current, PrefEntry opened) =>
-            Same(current, opened) ? null
-            : current == null ? "This key was deleted outside the editor. Saving creates it again."
-            : "This key changed outside the editor since you opened it. Saving overwrites that change.";
+        static bool Same(PrefEntry a, PrefEntry b) => PrefDiff.Same(a, b);
 
-        static bool Same(PrefEntry a, PrefEntry b) =>
-            a == null ? b == null : b != null && (a.SameValue(b) || a.Type == PrefType.Unknown && b.Type == PrefType.Unknown);
-
-        string SourceText()
+        void UpdateSource()
         {
+            var error = PlayerPrefStore.LastNativeError;
+            string where;
             switch (Application.platform)
             {
-                case RuntimePlatform.WindowsEditor: return "Registry";
-                case RuntimePlatform.OSXEditor: return "macOS plist";
-                case RuntimePlatform.LinuxEditor: return "Linux prefs";
-                default: return "Tracked keys";
+                case RuntimePlatform.WindowsEditor: where = "Registry"; break;
+                case RuntimePlatform.OSXEditor: where = "macOS plist"; break;
+                case RuntimePlatform.LinuxEditor: where = "Linux prefs"; break;
+                default: where = "Tracked keys"; break;
             }
+            _source.text = error == null ? where : "Tracked keys only";
+            _source.tooltip = error == null
+                ? "Keys are read from " + NativePrefs.Location
+                : "The OS store could not be read, so only keys written with this tool are listed.\n" + error;
+            _source.EnableInClassList("ppe-text--warning", error != null);
+            _source.EnableInClassList("ppe-dim", error == null);
         }
 
         void ApplyFilter()
         {
             _visible.Clear();
             _visible.AddRange(_filter.Apply(_all, _pinned, out var searchError));
-            _searchError.text = searchError ?? "";
-            _searchError.style.display = searchError == null ? DisplayStyle.None : DisplayStyle.Flex;
+            _searchError.Set(searchError, Severity.Error);
 
             int total = _filter.ShowInternal ? _all.Count : _all.Count(e => !PlayerPrefStore.IsInternalKey(e.Key));
             int hidden = _all.Count - total;
-            _count.text = (_visible.Count == total ? $"{total} keys" : $"{_visible.Count} of {total} keys")
-                          + (_selection.Count > 1 ? $" · {_selection.Count} selected" : "")
-                          + (hidden > 0 ? $" · {hidden} internal hidden" : "");
-            _filterMenu.text = _filter.Type == null ? "All types" : PrefJson.TypeName(_filter.Type.Value);
+            _count.text = (_visible.Count == total ? $"{total} {Plural(total, "key")}" : $"{_visible.Count} of {total} keys")
+                          + (_selection.Count > 1 ? $" · {_selection.Count} selected" : "");
+            _count.tooltip = hidden > 0 ? $"{hidden} Unity internal {Plural(hidden, "key")} hidden. Show them from the filter menu." : "";
+            _filterMenu.text = _filter.Type == null ? "All Types" : PrefJson.TypeName(_filter.Type.Value);
             _list.RefreshItems();
             SyncListSelection();
+            UpdateListEmptyState(total);
         }
+
+        void UpdateListEmptyState(int total)
+        {
+            bool empty = _visible.Count == 0;
+            _list.style.display = empty ? DisplayStyle.None : DisplayStyle.Flex;
+            _listEmpty.style.display = empty ? DisplayStyle.Flex : DisplayStyle.None;
+            if (!empty) return;
+
+            _listEmptyActions.Clear();
+            if (total == 0)
+            {
+                _listEmptyTitle.text = "No PlayerPrefs yet";
+                _listEmptyText.text = "Keys your game saves show up here. Create one, or import a JSON file.";
+                _listEmptyActions.Add(new Button(AddNew) { text = "New Key" });
+                _listEmptyActions.Add(new Button(ImportFromFile) { text = "Import…" });
+                return;
+            }
+            _listEmptyTitle.text = "No matching keys";
+            var query = (_filter.Query ?? "").Trim();
+            _listEmptyText.text = query.Length > 0 ? $"Nothing matches \"{query}\"." : $"No {PrefJson.TypeName(_filter.Type ?? PrefType.Unknown)} keys.";
+            if (query.Length > 0) _listEmptyActions.Add(new Button(() => _search.value = "") { text = "Clear Search" });
+            if (_filter.Type != null)
+                _listEmptyActions.Add(new Button(() =>
+                {
+                    _filter.Type = null;
+                    SaveSettings();
+                    ApplyFilter();
+                }) { text = "Show All Types" });
+        }
+
+        static string Plural(int n, string word) => n == 1 ? word : word + "s";
 
         void SyncListSelection()
         {
@@ -504,12 +552,18 @@ namespace kinatraa.PlayerPrefEditor
             bool delete = e.keyCode == KeyCode.Delete || e.keyCode == KeyCode.Backspace && e.actionKey;
             if (delete && _selection.Count > 0)
             {
-                DeleteKeys(_selection.ToList(), null);
+                DeleteKeys(_selection.ToList());
                 e.StopPropagation();
             }
             else if (e.keyCode == KeyCode.C && e.actionKey && _selection.Count > 0)
             {
-                CopyEntries(SelectedEntries(), "selected");
+                CopyEntries(SelectedEntries(), _selection.Count == 1 ? $"\"{_selection[0]}\"" : "the selection");
+                e.StopPropagation();
+            }
+            else if ((e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter) && _editing != null)
+            {
+                // Enter jumps from the list into the value, like renaming in the Project window.
+                _value.Focus();
                 e.StopPropagation();
             }
         }
@@ -520,33 +574,44 @@ namespace kinatraa.PlayerPrefEditor
             var keys = _selection.ToList();
             if (keys.Count == 0)
             {
-                menu.AppendAction("Add New Key", _ => AddNew());
+                menu.AppendAction("New Key", _ => AddNew());
+                menu.AppendAction("Import…", _ => ImportFromFile());
                 return;
             }
             if (keys.Count == 1)
             {
-                var key = keys[0];
-                menu.AppendAction("Copy Key Name", _ =>
+                foreach (var (name, action) in KeyActions(keys[0]))
                 {
-                    EditorGUIUtility.systemCopyBuffer = key;
-                    SetStatus($"Copied key name \"{key}\".");
-                });
-                menu.AppendAction("Copy as JSON", _ => CopyEntries(SelectedEntries(), $"\"{key}\""));
-                menu.AppendSeparator();
-                menu.AppendAction("Duplicate", _ => Duplicate());
-                menu.AppendAction("Rename", _ => StartRename());
-                menu.AppendAction(_pinned.Contains(key) ? "Unpin" : "Pin to Top", _ => TogglePin(key));
-                menu.AppendSeparator();
-                menu.AppendAction("Delete", _ => DeleteKeys(keys, null));
+                    if (name == null) menu.AppendSeparator();
+                    else menu.AppendAction(name, _ => action());
+                }
                 return;
             }
-            menu.AppendAction($"Copy {keys.Count} Keys as JSON", _ => CopyEntries(SelectedEntries(), "selected"));
-            menu.AppendAction($"Export {keys.Count} Keys to File…", _ => ExportToFile(SelectedEntries(), "playerprefs-selection.json"));
+            menu.AppendAction($"Copy {keys.Count} Keys as JSON", _ => CopyEntries(SelectedEntries(), "the selection"));
+            menu.AppendAction($"Export {keys.Count} Keys…", _ => ExportToFile(SelectedEntries(), "playerprefs-selection.json"));
+            menu.AppendSeparator();
             menu.AppendAction("Pin to Top", _ => SetPins(keys, true));
             menu.AppendAction("Unpin", _ => SetPins(keys, false));
             menu.AppendSeparator();
-            menu.AppendAction($"Delete {keys.Count} Keys", _ => DeleteKeys(keys, null));
+            menu.AppendAction($"Delete {keys.Count} Keys…", _ => DeleteKeys(keys));
         }
+
+        /// <summary>Actions on one key, shared by the list's context menu and the editor's ⋮ menu. A null name is a separator.</summary>
+        List<(string name, Action action)> KeyActions(string key) => new List<(string, Action)>
+        {
+            ("Rename", StartRename),
+            ("Duplicate", Duplicate),
+            (_pinned.Contains(key) ? "Unpin" : "Pin to Top", () => TogglePin(key)),
+            (null, null),
+            ("Copy Key Name", () =>
+            {
+                EditorGUIUtility.systemCopyBuffer = key;
+                SetStatus($"Copied the key name \"{key}\".");
+            }),
+            ("Copy as JSON", () => CopyEntries(_all.Where(e => e.Key == key).ToList(), $"\"{key}\"")),
+            (null, null),
+            ("Delete…", () => DeleteKeys(new List<string> { key })),
+        };
 
         List<PrefEntry> SelectedEntries() => _all.Where(e => _selection.Contains(e.Key)).ToList();
 
@@ -557,89 +622,97 @@ namespace kinatraa.PlayerPrefEditor
 
         VisualElement BuildRight()
         {
-            var right = new VisualElement { style = { minWidth = RightMin, flexGrow = 1, overflow = Overflow.Hidden, paddingLeft = 6, paddingRight = 6, paddingTop = 6, paddingBottom = 6 } };
+            var right = PrefStyles.Box("ppe-detail-pane");
 
-            _emptyPane = new VisualElement { style = { flexGrow = 1, justifyContent = Justify.Center, alignItems = Align.Center } };
-            _emptyPane.Add(new Label("Select a key to edit it.") { style = { whiteSpace = WhiteSpace.Normal, unityTextAlign = TextAnchor.MiddleCenter } });
-            _emptyPane.Add(new Button(AddNew) { text = "Add New Key", style = { marginTop = 6 } });
-            _emptyPane.Add(new Label("Tip: drop a .json file here to import it.") { style = { color = PrefStyles.Dim, marginTop = 10, whiteSpace = WhiteSpace.Normal, unityTextAlign = TextAnchor.MiddleCenter } });
+            _emptyPane = PrefStyles.Box("ppe-empty");
+            _emptyPane.Add(PrefStyles.Text("No key selected", "ppe-empty-title"));
+            _emptyPane.Add(PrefStyles.Text("Select a key to see and edit its value, or drop a .json file here to import it.", "ppe-empty-text", "ppe-dim"));
+            var emptyActions = PrefStyles.Box("ppe-empty-actions");
+            emptyActions.Add(new Button(AddNew) { text = "New Key" });
+            _emptyPane.Add(emptyActions);
             right.Add(_emptyPane);
 
-            _multiPane = new VisualElement { style = { flexGrow = 1, justifyContent = Justify.Center, alignItems = Align.Center } };
-            _multiPane.Add(_multiLabel = new Label { style = { unityFontStyleAndWeight = FontStyle.Bold, marginBottom = 6 } });
-            var multiButtons = PrefStyles.Row(
-                new Button(() => CopyEntries(SelectedEntries(), "selected")) { text = "Copy as JSON" },
-                new Button(() => ExportToFile(SelectedEntries(), "playerprefs-selection.json")) { text = "Export…" },
-                new Button(() => DeleteKeys(_selection.ToList(), null)) { text = "Delete" });
-            multiButtons.style.flexWrap = Wrap.Wrap;
-            multiButtons.style.justifyContent = Justify.Center;
-            _multiPane.Add(multiButtons);
+            _multiPane = PrefStyles.Box("ppe-empty");
+            _multiPane.Add(_multiTitle = PrefStyles.Text("", "ppe-empty-title"));
+            _multiPane.Add(_multiText = PrefStyles.Text("", "ppe-empty-text", "ppe-dim"));
+            var multiActions = PrefStyles.Box("ppe-empty-actions");
+            multiActions.Add(new Button(() => CopyEntries(SelectedEntries(), "the selection")) { text = "Copy as JSON" });
+            multiActions.Add(new Button(() => ExportToFile(SelectedEntries(), "playerprefs-selection.json")) { text = "Export…" });
+            multiActions.Add(new Button(() => DeleteKeys(_selection.ToList())) { text = "Delete…" });
+            _multiPane.Add(multiActions);
             right.Add(_multiPane);
 
             right.Add(_detail = BuildDetail());
             return right;
         }
 
-        static Label FieldLabel(string text) => new Label(text) { style = { width = 40, flexShrink = 0, marginLeft = 2 } };
-
         VisualElement BuildDetail()
         {
-            var detail = new VisualElement { style = { flexGrow = 1, flexShrink = 1 } };
+            var detail = PrefStyles.Box("ppe-detail");
 
-            _key = new TextField { style = { flexGrow = 1, flexShrink = 1, minWidth = 40 } };
+            // Header: the key as a title. It turns into a text field for a new key or a rename.
+            _keyTitle = PrefStyles.Text("", "ppe-key-title").Ellipsis();
+            _keyTitle.RegisterCallback<MouseDownEvent>(e =>
+            {
+                if (e.clickCount == 2) StartRename();
+            });
+            _key = new TextField().Classes("ppe-key-field");
             _key.RegisterValueChangedCallback(_ => UpdateDetail());
-            _rename = new Button(StartRename) { text = "Rename", tooltip = "Rename this key", style = { flexShrink = 0 } };
-            detail.Add(PrefStyles.Row(FieldLabel("Key"), _key, _rename));
+            _key.RegisterCallback<KeyDownEvent>(e =>
+            {
+                if (e.keyCode == KeyCode.Escape && _renaming) CancelRename();
+                else if (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter) _value.Focus();
+            }, TrickleDown.TrickleDown);
+            _menuButton = PrefStyles.SmallIconButton("_Menu", "Rename, duplicate, pin, copy or delete this key", () =>
+            {
+                var menu = new GenericMenu();
+                foreach (var (name, action) in KeyActions(_editing.Key))
+                {
+                    if (name == null) menu.AddSeparator("");
+                    else menu.AddItem(new GUIContent(name), false, () => action());
+                }
+                menu.DropDown(_menuButton.worldBound);
+            });
+            _keyLabel = PrefStyles.Text("Key", "ppe-field-label");
+            detail.Add(PrefStyles.Row(_keyTitle, _keyLabel, _key, _menuButton).Classes("ppe-detail-header"));
 
-            _type = new DropdownField(TypeChoices, 0) { style = { width = 90, flexShrink = 0 } };
+            _type = new DropdownField(TypeChoices, 0).Classes("ppe-type-field");
             _type.RegisterValueChangedCallback(OnTypeChanged);
-            _info = new Label { style = { color = PrefStyles.Dim, marginLeft = 6 } }.Ellipsis();
-            detail.Add(PrefStyles.Row(FieldLabel("Type"), _type, _info));
+            _info = PrefStyles.Text("", "ppe-info", "ppe-dim").Ellipsis();
+            detail.Add(PrefStyles.Row(PrefStyles.Text("Type", "ppe-field-label"), _type, _info).Classes("ppe-field-row"));
 
-            _embedToggle = new Toggle { text = "Edit as JSON", tooltip = "This string holds JSON. Edit it formatted; it is stored back as a string.", style = { flexShrink = 0, marginRight = 4 } };
+            _embedToggle = new Toggle { text = "Edit as JSON", tooltip = "This string holds JSON. Edit it formatted; it is saved back as a string, in its original layout (compact or indented)." };
             _embedToggle.RegisterValueChangedCallback(e => SetEmbedded(e.newValue));
-            _format = new Button(FormatValue) { text = "Format", tooltip = "Pretty-print the JSON", style = { flexShrink = 0 } };
-            var valueHeader = PrefStyles.Row(new Label("Value (JSON)") { style = { marginLeft = 2, flexShrink = 0, marginRight = 6 } }, PrefStyles.Spacer(), _embedToggle, _format);
-            valueHeader.style.flexWrap = Wrap.Wrap;
-            valueHeader.style.marginTop = 2;
-            detail.Add(valueHeader);
+            _format = new Button(FormatValue) { text = "Format", tooltip = "Pretty-print the JSON" }.Classes("ppe-mini-button");
+            detail.Add(PrefStyles.Row(PrefStyles.Text("Value", "ppe-value-label"), PrefStyles.Text("(JSON)", "ppe-dim"), PrefStyles.Spacer(), _embedToggle, _format)
+                .Classes("ppe-value-header"));
 
-            _value = new TextField { multiline = true };
-            _value.style.flexGrow = 1;
-            _value.style.flexShrink = 1;
-            _value.style.minHeight = 40;
+            _value = new TextField { multiline = true }.Classes("ppe-value").Mono();
 #if UNITY_2022_1_OR_NEWER
             _value.verticalScrollerVisibility = ScrollerVisibility.Auto;
 #endif
-            var mono = new StyleFontDefinition(PrefStyles.Monospace);
-            _value.Query<VisualElement>().ForEach(e =>
+            _value.RegisterValueChangedCallback(e =>
             {
-                e.style.unityFontDefinition = mono;
-                e.style.whiteSpace = WhiteSpace.Normal;
-                e.style.unityTextAlign = TextAnchor.UpperLeft;
+                _typeNote = null;
+                if ((e.newValue?.Length ?? 0) < LargeText)
+                {
+                    UpdateDetail();
+                    return;
+                }
+                // Parsing megabytes on every keystroke would stall typing; validate once the user pauses.
+                _pendingValidation?.Pause();
+                _pendingValidation = _value.schedule.Execute(UpdateDetail).StartingIn(250);
             });
-            _value.RegisterValueChangedCallback(_ => UpdateDetail());
             detail.Add(_value);
 
-            _dirty = new Label("● unsaved changes") { style = { color = PrefStyles.Warning, marginLeft = 2, flexShrink = 0 } };
-            _warning = new Label { style = { color = PrefStyles.Warning, marginLeft = 2, whiteSpace = WhiteSpace.Normal, flexShrink = 0 } };
-            // At most three lines; the full message is in the tooltip.
-            _error = new Label { style = { color = PrefStyles.Error, marginLeft = 2, whiteSpace = WhiteSpace.Normal, flexShrink = 0, maxHeight = 45, overflow = Overflow.Hidden } };
-            detail.Add(_dirty);
-            detail.Add(_warning);
-            detail.Add(_error);
+            detail.Add(_problem = new PrefBanner());
+            detail.Add(_notice = new PrefBanner());
 
-            var buttons = PrefStyles.Row(
-                _save = new Button(Save) { text = "Save", tooltip = "Save (Ctrl/Cmd+S)" },
-                _revert = new Button(Revert) { text = "Revert" },
-                _copy = new Button(CopyJson) { text = "Copy JSON", tooltip = "Copy this key as a JSON document" },
-                PrefStyles.Spacer(),
-                _pin = new Button(() => TogglePin(_editing.Key)),
-                _duplicate = new Button(Duplicate) { text = "Duplicate" },
-                _delete = new Button(() => DeleteKeys(new List<string> { _editing.Key }, null)) { text = "Delete" });
-            buttons.style.flexWrap = Wrap.Wrap;
-            buttons.style.marginTop = 4;
-            detail.Add(buttons);
+            _dirty = PrefStyles.Text("", "ppe-dirty").Ellipsis();
+            _dirty.AddToClassList("ppe-grow");
+            _revert = new Button(Revert) { text = "Revert" };
+            _save = new Button(Save) { text = "Save", tooltip = "Save (Ctrl/Cmd+S)" }.Classes("ppe-primary");
+            detail.Add(PrefStyles.Row(_dirty, _revert, _save).Classes("ppe-footer"));
             return detail;
         }
 
@@ -649,31 +722,49 @@ namespace kinatraa.PlayerPrefEditor
             bool multi = !editing && _selection.Count > 1;
             _detail.style.display = editing ? DisplayStyle.Flex : DisplayStyle.None;
             _multiPane.style.display = multi ? DisplayStyle.Flex : DisplayStyle.None;
-            _emptyPane.style.display = !editing && !multi ? DisplayStyle.Flex : DisplayStyle.None;
-            if (multi) _multiLabel.text = $"{_selection.Count} keys selected";
+            // With no keys at all the list already offers New Key and Import, so the right side stays quiet.
+            _emptyPane.style.display = !editing && !multi && _all.Count > 0 ? DisplayStyle.Flex : DisplayStyle.None;
+            if (multi)
+            {
+                var selected = SelectedEntries();
+                _multiTitle.text = $"{_selection.Count} keys selected";
+                _multiText.text = string.Join(" · ", selected.GroupBy(e => e.Type).OrderBy(g => g.Key).Select(g => $"{g.Count()} {PrefJson.TypeName(g.Key)}"));
+            }
             if (editing) UpdateDetail();
+        }
+
+        /// <summary>Records <paramref name="entry"/> as the stored state the editor compares against.</summary>
+        void SetBaseline(PrefEntry entry, bool isNew)
+        {
+            _editing = entry;
+            _isNew = isNew;
+            _externalChange = false;
+            _savedPlain = entry.Type == PrefType.Unknown || entry.Value == null ? "" : PrefJson.FormatValue(entry.Type, entry.Value);
+            _savedEmbedded = null;
+            // Large strings get their formatted baseline only when Edit as JSON is switched on (see SetEmbedded).
+            if (entry.Type == PrefType.String && ((string)entry.Value).Length < LargeText) ComputeSavedEmbedded();
+            _draft.BaseKey = entry.Key;
+            _draft.BaseJson = isNew || entry.Type == PrefType.Unknown ? "" : PrefJson.FormatDocument(new[] { entry });
+            _draft.IsNew = isNew;
+        }
+
+        void ComputeSavedEmbedded()
+        {
+            if (_editing.Value is string stored && PrefJson.TryExpandEmbedded(stored, out var pretty))
+            {
+                _savedEmbedded = pretty;
+                _embeddedIndented = stored.IndexOf('\n') >= 0;
+            }
         }
 
         /// <summary>Opens an entry in the editor. For a new draft, <paramref name="entry"/> holds the initial key, type and value.</summary>
         void Show(PrefEntry entry, bool isNew)
         {
-            _editing = entry;
-            _isNew = isNew;
+            SetBaseline(entry, isNew);
             _renaming = false;
-            _externalNote = null;
-            _savedPlain = entry.Type == PrefType.Unknown || entry.Value == null ? "" : PrefJson.FormatValue(entry.Type, entry.Value);
-            _savedEmbedded = null;
-            _embedded = false;
-            if (entry.Type == PrefType.String && PrefJson.TryExpandEmbedded((string)entry.Value, out var pretty))
-            {
-                _savedEmbedded = pretty;
-                _embeddedIndented = ((string)entry.Value).IndexOf('\n') >= 0;
-                _embedded = _preferEmbedded && !isNew;
-            }
-
-            _draft.BaseKey = entry.Key;
-            _draft.BaseJson = isNew || entry.Type == PrefType.Unknown ? "" : PrefJson.FormatDocument(new[] { entry });
-            _draft.IsNew = isNew;
+            _typeNote = null;
+            // Pretty-printing a huge string doubles its size and makes the field sluggish, so large ones open as plain text.
+            _embedded = _savedEmbedded != null && _preferEmbedded && !isNew;
 
             _key.SetValueWithoutNotify(entry.Key);
             _type.SetValueWithoutNotify(PrefJson.TypeName(entry.Type));
@@ -692,8 +783,7 @@ namespace kinatraa.PlayerPrefEditor
         void ClearEditor()
         {
             _editing = null;
-            _isNew = _renaming = _embedded = false;
-            _externalNote = null;
+            _isNew = _renaming = _embedded = _externalChange = false;
             _hasDraft = false;
             hasUnsavedChanges = false;
             UpdatePanes();
@@ -720,9 +810,9 @@ namespace kinatraa.PlayerPrefEditor
             _key.SetValueWithoutNotify(key);
             _type.SetValueWithoutNotify(type);
             _value.SetValueWithoutNotify(text);
-            if (!isNew) _externalNote = ExternalNote(PlayerPrefStore.Read(baseKey), opened);
+            if (!isNew) _externalChange = !Same(PlayerPrefStore.Read(baseKey), opened);
             UpdatePanes();
-            SetStatus($"Kept your unsaved changes to {(string.IsNullOrEmpty(key) ? "the new key" : $"\"{key}\"")}. Save or Revert them.");
+            SetStatus($"Kept your unsaved changes to {(string.IsNullOrEmpty(key) ? "the new key" : $"\"{key}\"")}.");
             return true;
         }
 
@@ -743,7 +833,11 @@ namespace kinatraa.PlayerPrefEditor
                 value = s;
                 return true;
             }
-            return PrefJson.TryParseValue(_value.value, EditorType, out value, out error);
+            if (PrefJson.TryParseValue(_value.value, EditorType, out value, out error)) return true;
+            // The most common slip: typing text for a string without the JSON quotes.
+            if (EditorType == PrefType.String && error.StartsWith("Invalid JSON") && !(_value.value ?? "").TrimStart().StartsWith("\""))
+                error = "Strings need double quotes in JSON, e.g. \"Hakien\".";
+            return false;
         }
 
         void UpdateDetail()
@@ -751,25 +845,62 @@ namespace kinatraa.PlayerPrefEditor
             if (_editing == null) return;
             bool keyEditable = _isNew || _renaming;
             var key = _key.value ?? "";
+            bool dirty = IsDirty;
 
-            string error = null, warning = _externalNote;
-            if (keyEditable && key.Length == 0) error = "Enter a key name.";
+            // Header
+            _keyTitle.text = _editing.Key;
+            _keyTitle.tooltip = _editing.Key + "\nDouble-click or press F2 to rename.";
+            _keyTitle.style.display = keyEditable ? DisplayStyle.None : DisplayStyle.Flex;
+            _key.style.display = keyEditable ? DisplayStyle.Flex : DisplayStyle.None;
+            _keyLabel.style.display = keyEditable ? DisplayStyle.Flex : DisplayStyle.None;
+            _menuButton.style.display = _isNew ? DisplayStyle.None : DisplayStyle.Flex;
+
+            // Validation: parse once and reuse the value below.
+            string error = null;
+            object parsed = null;
+            bool valid = TryGetEditorValue(out parsed, out var parseError);
+            // An empty name just keeps Save disabled; it is not worth a red error before the user has typed anything.
+            if (keyEditable && key.Length == 0) error = null;
             else if (!_isNew && _editing.Type == PrefType.Unknown && EditorType == PrefType.Unknown)
-                error = "The type of this key could not be detected. Pick a type and enter a value to overwrite it.";
-            else TryGetEditorValue(out _, out error);
-            if (keyEditable && key.Length > 0 && key.Trim() != key)
-                warning = (warning == null ? "" : warning + "\n") + "The key name starts or ends with a space.";
+                error = "Pick a type to replace this value.";
+            else if (!valid) error = parseError;
+            _problem.Set(error, Severity.Error);
 
-            // Offer "Edit as JSON" for strings whose content is a JSON object or array.
-            bool canEmbed = _embedded || EditorType == PrefType.String &&
-                            PrefJson.TryParseValue(_value.value, PrefType.String, out var s, out _) && PrefJson.TryExpandEmbedded((string)s, out _);
-            _embedToggle.style.display = canEmbed ? DisplayStyle.Flex : DisplayStyle.None;
+            // Notices, most important first.
+            if (_externalChange)
+            {
+                var current = _all.Find(e => e.Key == _editing.Key);
+                _notice.Set(current == null
+                        ? "This key was deleted outside the editor."
+                        : $"This key changed outside the editor. It is now {PrefJson.TypeName(current.Type)} {PrefFilter.Preview(current, 40)}.",
+                    Severity.Warning, ("Load Theirs", (Action)LoadExternal), ("Keep Mine", (Action)KeepMine));
+            }
+            else if (!_isNew && _editing.Type == PrefType.Unknown)
+                _notice.Set("PlayerPrefs can't tell this key's type, so its value can't be read. Saving replaces it, and Undo can't bring the old value back.", Severity.Warning);
+            else if (keyEditable && key.Length > 0 && key.Trim() != key)
+                _notice.Set("The key name starts or ends with a space.", Severity.Warning);
+            else _notice.Set(null);
 
-            if (EditorType == PrefType.String && error == null && TryGetEditorValue(out var str, out _))
-                _info.text = $"{((string)str).Length:N0} characters";
+            // Value tools: "Edit as JSON" for strings holding a JSON object or array; Format only where it can change something.
+            _embedToggle.style.display = _embedded || valid && parsed is string text && HoldsJson(text) ? DisplayStyle.Flex : DisplayStyle.None;
+            _format.style.display = _embedded ? DisplayStyle.Flex : DisplayStyle.None;
+            _format.SetEnabled(error == null);
+
+            if (_typeNote != null) _info.text = _typeNote;
+            else if (valid && parsed is string str) _info.text = (_embedded ? "JSON content · " : "") + $"{str.Length:N0} characters";
             else _info.text = "";
 
-            bool dirty = IsDirty;
+            // Footer
+            _dirty.text = !dirty ? (_renaming ? "Renaming" : "")
+                : _isNew ? "● New key"
+                : _renaming && key != _editing.Key ? "● Renamed"
+                : "● Unsaved";
+            _dirty.tooltip = dirty ? "Not saved yet. Save writes it to PlayerPrefs; Revert drops it." : "";
+            _save.SetEnabled(dirty && error == null && valid && key.Length > 0);
+            _revert.SetEnabled(dirty || _renaming);
+            _revert.text = _isNew ? "Discard" : _renaming && !dirty ? "Cancel" : "Revert";
+
+            // Unity marks the tab and asks before closing; the draft survives script reloads.
             hasUnsavedChanges = dirty;
             saveChangesMessage = $"Save changes to the PlayerPref \"{key}\"?";
             _hasDraft = dirty;
@@ -782,25 +913,22 @@ namespace kinatraa.PlayerPrefEditor
                 _draft.Embedded = _embedded;
                 _draft.EmbeddedIndented = _embeddedIndented;
             }
-            _key.isReadOnly = !keyEditable;
-            _key.tooltip = keyEditable ? "" : "Use Rename to change the key name.";
-            _rename.style.display = keyEditable ? DisplayStyle.None : DisplayStyle.Flex;
-            _dirty.style.display = dirty ? DisplayStyle.Flex : DisplayStyle.None;
-            _dirty.text = _isNew ? "● new key, not saved yet" : _renaming && key != _editing.Key ? "● unsaved changes (rename)" : "● unsaved changes";
-            _warning.text = warning ?? "";
-            _warning.style.display = warning == null ? DisplayStyle.None : DisplayStyle.Flex;
-            _error.text = error ?? "";
-            _error.tooltip = error ?? "";
-            _error.style.display = error == null ? DisplayStyle.None : DisplayStyle.Flex;
+        }
 
-            _save.SetEnabled(dirty && error == null);
-            _revert.SetEnabled(dirty);
-            _revert.text = _isNew ? "Discard" : "Revert";
-            _copy.SetEnabled(error == null && key.Length > 0);
-            _format.SetEnabled(error == null);
-            foreach (var b in new[] { _pin, _duplicate, _delete })
-                b.style.display = _isNew ? DisplayStyle.None : DisplayStyle.Flex;
-            if (!_isNew) _pin.text = _pinned.Contains(_editing.Key) ? "Unpin" : "Pin";
+        /// <summary>Whether a string's content is a JSON object or array. Large strings are only checked by their first character.</summary>
+        static bool HoldsJson(string text)
+        {
+            var trimmed = text.TrimStart();
+            if (trimmed.Length == 0 || trimmed[0] != '{' && trimmed[0] != '[') return false;
+            return text.Length >= LargeText || PrefJson.TryExpandEmbedded(text, out _);
+        }
+
+        /// <summary>The editor text as Format would leave it, or null when it does not parse.</summary>
+        string FormattedText()
+        {
+            if (!TryGetEditorValue(out var value, out _)) return null;
+            if (_embedded) return PrefJson.TryExpandEmbedded((string)value, out var pretty) ? pretty : null;
+            return PrefJson.FormatValue(EditorType, value);
         }
 
         void OnTypeChanged(ChangeEvent<string> e)
@@ -816,8 +944,14 @@ namespace kinatraa.PlayerPrefEditor
                     return;
                 }
             }
-            // Carry the value over when it survives the change (5 → 5.0 → "5"); otherwise leave it for the user to fix.
-            if (PrefJson.TryConvertText(_value.value, from, to, out var converted)) _value.SetValueWithoutNotify(converted);
+            // Carry the value over when it survives the change (5 → 5.0 → "5"); otherwise say so and leave it to the user.
+            if (to == PrefType.Unknown) _typeNote = null;
+            else if (PrefJson.TryConvertText(_value.value, from, to, out var converted))
+            {
+                _typeNote = converted == _value.value ? null : $"Converted from {PrefJson.TypeName(from)}.";
+                _value.SetValueWithoutNotify(converted);
+            }
+            else _typeNote = from == PrefType.Unknown ? null : $"Can't convert this value to {PrefJson.TypeName(to)}. Enter a new one.";
             UpdateDetail();
         }
 
@@ -834,9 +968,10 @@ namespace kinatraa.PlayerPrefEditor
                     !PrefJson.TryExpandEmbedded((string)s, out var pretty))
                 {
                     _embedToggle.SetValueWithoutNotify(false);
-                    SetStatus(error ?? "The string does not hold a JSON object or array.", true);
+                    SetStatus(error ?? "The string does not hold a JSON object or array.", Severity.Error);
                     return;
                 }
+                if (_savedEmbedded == null && !_isNew && _editing.Type == PrefType.String) ComputeSavedEmbedded();
                 if (_savedEmbedded == null) _embeddedIndented = ((string)s).IndexOf('\n') >= 0;
                 _value.SetValueWithoutNotify(pretty);
             }
@@ -845,7 +980,7 @@ namespace kinatraa.PlayerPrefEditor
                 if (!PrefJson.TryCollapseEmbedded(_value.value, _embeddedIndented, out var s, out var error))
                 {
                     _embedToggle.SetValueWithoutNotify(true);
-                    SetStatus("Fix the JSON before switching back: " + error, true);
+                    SetStatus("Fix the JSON before switching back: " + error, Severity.Error);
                     return;
                 }
                 _value.SetValueWithoutNotify(PrefJson.FormatValue(PrefType.String, s));
@@ -859,29 +994,32 @@ namespace kinatraa.PlayerPrefEditor
 
         void FormatValue()
         {
-            if (!TryGetEditorValue(out var value, out var error))
-            {
-                SetStatus(error, true);
-                return;
-            }
-            _value.value = _embedded && PrefJson.TryExpandEmbedded((string)value, out var formatted) ? formatted : PrefJson.FormatValue(EditorType, value);
+            var formatted = FormattedText();
+            if (formatted != null) _value.value = formatted;
         }
 
         bool ConfirmDiscard()
         {
             if (!IsDirty) return true;
             var name = string.IsNullOrEmpty(_key.value) ? "the new key" : $"\"{_key.value}\"";
-            return EditorUtility.DisplayDialog("Discard changes?", $"Discard unsaved changes to {name}?", "Discard", "Keep Editing");
+            return EditorUtility.DisplayDialog("Discard changes?", $"Your changes to {name} have not been saved.", "Discard", "Keep Editing");
         }
 
         // ---------- actions ----------
 
-        void Commit(string label, IReadOnlyCollection<PrefEntry> writes, IReadOnlyCollection<string> deletes)
+        /// <summary>Commits through the undo history. Returns false (and reports why) when nothing was written.</summary>
+        bool Commit(string label, IReadOnlyCollection<PrefEntry> writes, IReadOnlyCollection<string> deletes)
         {
             _committing = true;
             try
             {
                 PrefHistory.instance.Commit(label, writes, deletes);
+                return true;
+            }
+            catch (Exception e)
+            {
+                SetStatus($"Nothing was written: {e.Message}", Severity.Error);
+                return false;
             }
             finally
             {
@@ -896,6 +1034,7 @@ namespace kinatraa.PlayerPrefEditor
             Show(new PrefEntry("", PrefType.String, ""), true);
             ApplyFilter();
             _key.Focus();
+            SetStatus("Name the new key, pick a type and enter its value.");
         }
 
         void Duplicate()
@@ -908,7 +1047,7 @@ namespace kinatraa.PlayerPrefEditor
             Show(new PrefEntry(key, source.Type, source.Value), true);
             ApplyFilter();
             _key.Focus();
-            SetStatus($"Duplicating \"{source.Key}\". Edit the name and value, then Save.");
+            SetStatus($"Duplicating \"{source.Key}\". Adjust the name and value, then Save.");
         }
 
         void StartRename()
@@ -917,7 +1056,15 @@ namespace kinatraa.PlayerPrefEditor
             _renaming = true;
             UpdateDetail();
             _key.Focus();
-            SetStatus("Enter the new key name, then Save. Revert cancels.");
+            _key.SelectAll();
+        }
+
+        void CancelRename()
+        {
+            _renaming = false;
+            _key.SetValueWithoutNotify(_editing.Key);
+            UpdateDetail();
+            _list.Focus();
         }
 
         void TogglePin(string key) => SetPins(new[] { key }, !_pinned.Contains(key));
@@ -928,19 +1075,48 @@ namespace kinatraa.PlayerPrefEditor
             Reload();
         }
 
+        void LoadExternal()
+        {
+            var current = PlayerPrefStore.Read(_editing.Key);
+            if (current != null) Show(current, false);
+            else ClearEditor();
+            SetStatus("Loaded the current value; your edit was discarded.");
+        }
+
+        /// <summary>Keeps the edit and makes the outside value the new baseline, so Revert goes back to it and Save no longer asks.</summary>
+        void KeepMine()
+        {
+            var current = PlayerPrefStore.Read(_editing.Key);
+            string text = _value.value, type = _type.value, key = _key.value;
+            bool renaming = _renaming, embedded = _embedded;
+            if (current == null)
+            {
+                SetBaseline(new PrefEntry(key, PrefJson.ParseType(type), null), true);
+                renaming = false;
+            }
+            else SetBaseline(current, false);
+            _renaming = renaming;
+            _embedded = embedded;
+            _key.SetValueWithoutNotify(key);
+            _type.SetValueWithoutNotify(type);
+            _value.SetValueWithoutNotify(text);
+            UpdatePanes();
+            SetStatus("Kept your edit. Saving will replace the outside change.");
+        }
+
         void Save()
         {
             if (_editing == null || !IsDirty) return;
             if (!TryGetEditorValue(out var value, out var error))
             {
-                SetStatus($"Not saved: {error}", true);
+                SetStatus($"Not saved: {error}", Severity.Error);
                 return;
             }
             var type = EditorType;
             var key = _isNew || _renaming ? _key.value : _editing.Key;
             if (string.IsNullOrEmpty(key))
             {
-                SetStatus("Not saved: enter a key name.", true);
+                SetStatus("Not saved: enter a key name.", Severity.Error);
                 return;
             }
             string oldKey = _renaming && key != _editing.Key ? _editing.Key : null;
@@ -948,8 +1124,8 @@ namespace kinatraa.PlayerPrefEditor
             if (_isNew && PlayerPrefs.HasKey(key))
             {
                 int choice = EditorUtility.DisplayDialogComplex("Key already exists",
-                    $"\"{key}\" already exists in PlayerPrefs.\n\nOpen its current value, or overwrite it with the value you entered?",
-                    "Open Existing", "Cancel", "Overwrite");
+                    $"\"{key}\" already exists in PlayerPrefs.\n\nOpen its current value instead, or replace it with the value you entered? Replacing can be undone.",
+                    "Open Existing", "Cancel", "Replace");
                 if (choice == 1) return;
                 if (choice == 0)
                 {
@@ -958,49 +1134,50 @@ namespace kinatraa.PlayerPrefEditor
                     _editing = null;
                     Reload();
                     Show(PlayerPrefStore.Read(key), false);
-                    SetStatus($"Opened existing key \"{key}\".");
+                    SetStatus($"Opened the existing key \"{key}\".");
                     return;
                 }
             }
             if (oldKey != null && PlayerPrefs.HasKey(key) &&
-                !EditorUtility.DisplayDialog("Key already exists", $"\"{key}\" already exists. Replace it with \"{oldKey}\"?", "Replace", "Cancel"))
+                !EditorUtility.DisplayDialog("Key already exists", $"\"{key}\" already exists. Renaming \"{oldKey}\" replaces it. You can undo this.", "Replace", "Cancel"))
                 return;
 
-            if (!_isNew && !Same(PlayerPrefStore.Read(_editing.Key), _editing))
+            if (!_isNew)
             {
-                int choice = EditorUtility.DisplayDialogComplex("Changed outside the editor",
-                    $"\"{_editing.Key}\" changed after you opened it (for example in Play Mode).\n\nOverwrite it with your value?",
-                    "Overwrite", "Cancel", "Load Current Value");
-                if (choice == 1) return;
-                if (choice == 2)
+                var current = PlayerPrefStore.Read(_editing.Key);
+                if (!Same(current, _editing))
                 {
-                    var current = PlayerPrefStore.Read(_editing.Key);
-                    if (current != null) Show(current, false);
-                    else ClearEditor();
-                    Reload();
-                    return;
+                    int choice = EditorUtility.DisplayDialogComplex("Changed outside the editor",
+                        $"\"{_editing.Key}\" changed after you opened it, for example in Play Mode.\n\nReplace that change with your value?",
+                        "Replace", "Cancel", "Load Theirs");
+                    if (choice == 1) return;
+                    if (choice == 2)
+                    {
+                        LoadExternal();
+                        return;
+                    }
                 }
+                if (current != null && current.Type == PrefType.Unknown &&
+                    !EditorUtility.DisplayDialog("Replace an unreadable value?",
+                        $"PlayerPrefs can't tell the type of \"{_editing.Key}\", so its current value can't be read or restored.\n\nSaving replaces it with {PrefJson.TypeName(type)} {PrefFilter.Preview(new PrefEntry(key, type, value), 40)}, and Undo can't bring the old value back.",
+                        "Replace", "Cancel"))
+                    return;
             }
 
             var entry = new PrefEntry(key, type, value);
-            try
-            {
-                Commit(oldKey != null ? $"Rename \"{oldKey}\" to \"{key}\"" : $"Save \"{key}\"",
-                    new[] { entry }, oldKey != null ? new[] { oldKey } : Array.Empty<string>());
-            }
-            catch (Exception e)
-            {
-                SetStatus($"Save failed: {e.Message}", true);
+            if (!Commit(oldKey != null ? $"Rename \"{oldKey}\" to \"{key}\"" : $"Save \"{key}\"",
+                    new[] { entry }, oldKey != null ? new[] { oldKey } : Array.Empty<string>()))
                 return;
-            }
             if (oldKey != null && _pinned.Contains(oldKey))
             {
                 PlayerPrefStore.SetPinned(oldKey, false);
                 PlayerPrefStore.SetPinned(key, true);
             }
+            bool embedded = _embedded;
             Show(entry, false);
+            if (embedded != _embedded && _savedEmbedded != null) SetEmbedded(embedded);
             Reload();
-            SetStatus(oldKey != null ? $"Renamed \"{oldKey}\" to \"{key}\"." : $"Saved \"{key}\" ({PrefJson.TypeName(type)}).");
+            SetStatus(oldKey != null ? $"Renamed \"{oldKey}\" to \"{key}\"." : $"Saved \"{key}\".");
         }
 
         void Revert()
@@ -1012,42 +1189,65 @@ namespace kinatraa.PlayerPrefEditor
                 SetStatus("Discarded the new key.");
                 return;
             }
+            if (_renaming && !IsDirty)
+            {
+                CancelRename();
+                return;
+            }
             var current = PlayerPrefStore.Read(_editing.Key);
             if (current != null) Show(current, false);
             else ClearEditor();
-            SetStatus("Reverted.");
+            SetStatus("Reverted to the saved value.");
         }
 
-        void DeleteKeys(List<string> keys, string description)
+        void DeleteAll()
+        {
+            var keys = ExportScope().Select(e => e.Key).ToList();
+            int hidden = _all.Count - keys.Count;
+            DeleteKeys(keys, $"Delete all {keys.Count} {Plural(keys.Count, "key")}?" + (hidden > 0 ? $" Unity's {hidden} internal {Plural(hidden, "key")} are kept." : ""));
+        }
+
+        void DeleteKeys(List<string> keys, string question = null)
         {
             if (keys.Count == 0) return;
-            var what = description ?? (keys.Count == 1 ? $"\"{keys[0]}\"" : $"{keys.Count} keys");
-            var unknown = keys.Count(k => _all.Find(e => e.Key == k)?.Type == PrefType.Unknown);
-            var message = $"Delete {what}?" + (keys.Count > 1 && description != null ? $" ({keys.Count} keys)" : "")
-                          + (unknown > 0 ? $"\n\n{unknown} of them have an unknown type and cannot be restored with Undo." : "\n\nYou can restore them with Undo.");
-            if (!EditorUtility.DisplayDialog("Delete PlayerPrefs", message, "Delete", "Cancel")) return;
+            int unknown = keys.Count(k => _all.Find(e => e.Key == k)?.Type == PrefType.Unknown);
+            question = question ?? (keys.Count == 1 ? $"Delete \"{keys[0]}\"?" : $"Delete {keys.Count} keys?");
+            var undo = unknown == 0
+                ? "You can bring them back with Undo until Unity closes."
+                : $"{unknown} of them {(unknown == 1 ? "has" : "have")} an unknown type and can't be brought back with Undo.";
+            if (keys.Count == 1) undo = unknown == 0 ? "You can bring it back with Undo until Unity closes." : "Its type is unknown, so Undo can't bring it back.";
+            if (!EditorUtility.DisplayDialog("Delete PlayerPrefs", question + "\n\n" + undo, "Delete", "Cancel")) return;
 
-            Commit(keys.Count == 1 ? $"Delete \"{keys[0]}\"" : $"Delete {keys.Count} keys", Array.Empty<PrefEntry>(), keys);
+            if (!Commit(keys.Count == 1 ? $"Delete \"{keys[0]}\"" : $"Delete {keys.Count} keys", Array.Empty<PrefEntry>(), keys)) return;
             if (_editing != null && keys.Contains(_editing.Key)) ClearEditor();
-            _selection.Clear();
+            // Keep the open key selected when only other keys were deleted.
+            _selection = _editing != null && !_isNew ? new List<string> { _editing.Key } : new List<string>();
             Reload();
             SetStatus(keys.Count == 1 ? $"Deleted \"{keys[0]}\"." : $"Deleted {keys.Count} keys.");
         }
 
-        void Undo()
-        {
-            var label = PrefHistory.instance.Undo();
-            if (label == null) return;
-            Reload();
-            SetStatus($"Undid: {label}.");
-        }
+        void Undo() => StepHistory(() => PrefHistory.instance.Undo(), "Undid");
 
-        void Redo()
+        void Redo() => StepHistory(() => PrefHistory.instance.Redo(), "Redid");
+
+        void StepHistory(Func<string> step, string verb)
         {
-            var label = PrefHistory.instance.Redo();
+            string label;
+            try
+            {
+                label = step();
+            }
+            catch (Exception e)
+            {
+                Reload();
+                SetStatus(e.Message, Severity.Error);
+                return;
+            }
             if (label == null) return;
             Reload();
-            SetStatus($"Redid: {label}.");
+            var lost = PrefHistory.instance.LastUnrestorable;
+            if (lost.Count == 0) SetStatus($"{verb}: {label}.");
+            else SetStatus($"{verb}: {label}. {string.Join(", ", lost.Select(k => $"\"{k}\""))} could not be restored: the earlier value had an unknown type.", Severity.Warning);
         }
 
         void UpdateUndoButtons()
@@ -1059,22 +1259,11 @@ namespace kinatraa.PlayerPrefEditor
             _redo.tooltip = h.CanRedo ? $"Redo: {h.RedoLabel}" : "Nothing to redo";
         }
 
-        void CopyJson()
-        {
-            if (!TryGetEditorValue(out var value, out var error))
-            {
-                SetStatus(error, true);
-                return;
-            }
-            var key = _key.value;
-            EditorGUIUtility.systemCopyBuffer = PrefJson.FormatDocument(new[] { new PrefEntry(key, EditorType, value) });
-            SetStatus($"Copied \"{key}\" as JSON.");
-        }
-
         void CopyEntries(List<PrefEntry> entries, string what)
         {
             EditorGUIUtility.systemCopyBuffer = PlayerPrefStore.ExportJson(entries, out int exported, out int skipped);
-            SetStatus($"Copied {what} ({exported} keys) as JSON{SkippedNote(skipped)}.");
+            if (skipped == 0) SetStatus($"Copied {what} as JSON ({exported} {Plural(exported, "key")}).");
+            else SetStatus($"Copied {exported} {Plural(exported, "key")} as JSON. {skipped} of unknown type left out: their values can't be read.", Severity.Warning);
         }
 
         void ExportToFile(List<PrefEntry> entries, string defaultName)
@@ -1084,15 +1273,14 @@ namespace kinatraa.PlayerPrefEditor
             try
             {
                 File.WriteAllText(path, PlayerPrefStore.ExportJson(entries, out int exported, out int skipped));
-                SetStatus($"Exported {exported} keys to {path}{SkippedNote(skipped)}.");
+                if (skipped == 0) SetStatus($"Exported {exported} {Plural(exported, "key")} to {path}.");
+                else SetStatus($"Exported {exported} {Plural(exported, "key")} to {path}. {skipped} of unknown type left out: their values can't be read.", Severity.Warning);
             }
             catch (Exception e)
             {
-                SetStatus($"Export failed: {e.Message}", true);
+                SetStatus($"Export failed: {e.Message}", Severity.Error);
             }
         }
-
-        static string SkippedNote(int skipped) => skipped > 0 ? $" ({skipped} of unknown type skipped)" : "";
 
         void ImportFromFile()
         {
@@ -1109,7 +1297,7 @@ namespace kinatraa.PlayerPrefEditor
             }
             catch (Exception e)
             {
-                SetStatus($"Import failed: {e.Message}", true);
+                SetStatus($"Import failed: {e.Message}", Severity.Error);
                 return;
             }
             ImportText(json, Path.GetFileName(path));
@@ -1119,13 +1307,13 @@ namespace kinatraa.PlayerPrefEditor
         {
             if (!PrefJson.TryParseDocument(json, out var entries, out var error))
             {
-                SetStatus($"Import failed, nothing was written. {error}", true);
-                EditorUtility.DisplayDialog("Import failed", $"{source} is not a valid PlayerPrefs document. Nothing was written.\n\n{error}", "OK");
+                SetStatus($"Import failed, nothing was written. {error}", Severity.Error);
+                EditorUtility.DisplayDialog("Can't import", $"{source} is not a valid PlayerPrefs document, so nothing was written.\n\n{error}", "OK");
                 return;
             }
             if (entries.Count == 0)
             {
-                SetStatus($"{source} has no keys to import.");
+                SetStatus($"{source} has no keys to import.", Severity.Warning);
                 return;
             }
             ImportPreviewWindow.Open(source, entries, message =>
@@ -1160,11 +1348,26 @@ namespace kinatraa.PlayerPrefEditor
             SetStatus($"Copied the storage location: {location}");
         }
 
-        void SetStatus(string message, bool isError = false)
+        // ---------- status bar ----------
+
+        VisualElement BuildStatusBar()
+        {
+            _statusIcon = PrefStyles.Box("ppe-status-icon");
+            _status = PrefStyles.Text("").Ellipsis();
+            _status.AddToClassList("ppe-grow");
+            _source = PrefStyles.Text("", "ppe-source", "ppe-dim");
+            return PrefStyles.Row(_statusIcon, _status, _source).Classes("ppe-statusbar");
+        }
+
+        void SetStatus(string message, Severity severity = Severity.Info)
         {
             _status.text = message;
             _status.tooltip = message;
-            _status.style.color = isError ? new StyleColor(PrefStyles.Error) : new StyleColor(StyleKeyword.Null);
+            _status.EnableInClassList("ppe-text--error", severity == Severity.Error);
+            _status.EnableInClassList("ppe-text--warning", severity == Severity.Warning);
+            var icon = severity == Severity.Info ? null : PrefStyles.FindIcon(PrefStyles.SeverityIcon(severity));
+            _statusIcon.style.backgroundImage = icon != null ? new StyleBackground(icon) : new StyleBackground(StyleKeyword.None);
+            _statusIcon.style.display = icon != null ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
         // ---------- shortcuts (active while this window has focus) ----------
@@ -1178,7 +1381,10 @@ namespace kinatraa.PlayerPrefEditor
         [Shortcut("kinatraa/Player Pref Editor/Find", typeof(PlayerPrefEditorWindow), KeyCode.F, ShortcutModifiers.Action)]
         static void FindShortcut(ShortcutArguments args) => (args.context as PlayerPrefEditorWindow)?._search.Focus();
 
-        [Shortcut("kinatraa/Player Pref Editor/Add New", typeof(PlayerPrefEditorWindow), KeyCode.N, ShortcutModifiers.Action)]
+        [Shortcut("kinatraa/Player Pref Editor/New Key", typeof(PlayerPrefEditorWindow), KeyCode.N, ShortcutModifiers.Action)]
         static void AddShortcut(ShortcutArguments args) => (args.context as PlayerPrefEditorWindow)?.AddNew();
+
+        [Shortcut("kinatraa/Player Pref Editor/Rename", typeof(PlayerPrefEditorWindow), KeyCode.F2)]
+        static void RenameShortcut(ShortcutArguments args) => (args.context as PlayerPrefEditorWindow)?.StartRename();
     }
 }

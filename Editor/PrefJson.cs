@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -192,6 +193,11 @@ namespace kinatraa.PlayerPrefEditor
         {
             token = null;
             error = null;
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                error = "Invalid JSON: the value is empty.";
+                return false;
+            }
             try
             {
                 // DateParseHandling.None keeps date-like strings exactly as written.
@@ -203,6 +209,17 @@ namespace kinatraa.PlayerPrefEditor
                             throw new JsonReaderException($"Unexpected content after the JSON value, line {reader.LineNumber}, position {reader.LinePosition}.");
                 }
                 return true;
+            }
+            catch (JsonReaderException e)
+            {
+                // Newtonsoft appends the location to the end ("... Path 'a', line 1, position 9."); lead with it instead.
+                var message = e.Message;
+                int path = message.IndexOf(" Path '", StringComparison.Ordinal);
+                if (path >= 0) message = message.Substring(0, path);
+                error = e.LineNumber > 0
+                    ? $"Invalid JSON at line {e.LineNumber}, position {e.LinePosition}: {message}"
+                    : "Invalid JSON: " + message;
+                return false;
             }
             catch (JsonException e)
             {

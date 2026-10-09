@@ -1,4 +1,187 @@
-/* Resize cursor for the list/editor divider (C# cannot set editor cursors). */
-.ppe-divider-grip {
-    cursor: resize-horizontal;
+/* Shared by the Player Pref Editor and the import preview. Theme colors hang off .ppe-dark / .ppe-light on the root. */
+
+/* ---------- layout ---------- */
+
+.ppe-root { flex-grow: 1; }
+.ppe-row { flex-direction: row; align-items: center; flex-shrink: 0; }
+.ppe-grow { flex-grow: 1; flex-shrink: 1; min-width: 0; }
+.ppe-ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 1; }
+
+.ppe-toolbar { flex-shrink: 0; }
+.ppe-toolbar .unity-toolbar-button,
+.ppe-toolbar .unity-toolbar-menu { flex-shrink: 0; }
+.ppe-search { flex-grow: 1; flex-shrink: 1; min-width: 60px; max-width: 360px; width: auto; }
+.ppe-icon { width: 16px; height: 16px; flex-shrink: 0; -unity-background-scale-mode: scale-to-fit; }
+.ppe-toolbar-icon { padding-left: 3px; padding-right: 3px; justify-content: center; }
+
+.ppe-body { flex-direction: row; flex-grow: 1; flex-shrink: 1; }
+
+/* ---------- key list ---------- */
+
+.ppe-list-pane { flex-shrink: 0; min-width: 150px; overflow: hidden; }
+.ppe-list-header { height: 22px; padding: 0 6px; border-bottom-width: 1px; }
+.ppe-list-count { -unity-font-style: bold; }
+.ppe-list { flex-grow: 1; }
+
+.ppe-key-row { flex-direction: row; align-items: center; height: 22px; padding: 0 6px 0 4px; }
+.ppe-pin { width: 12px; height: 12px; margin-right: 2px; flex-shrink: 0; -unity-background-scale-mode: scale-to-fit; }
+.ppe-key-name { flex-basis: 55%; flex-grow: 1; }
+/* Dimmed by opacity, not color, so it follows the row's text color in every selection state and theme. */
+.ppe-key-preview { flex-basis: 45%; flex-grow: 1; margin-left: 8px; font-size: 11px; opacity: 0.6; }
+
+/* Type and change pills: same shape everywhere, with opaque colors so they read on any row or selection color. */
+.ppe-pill {
+    font-size: 10px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+    height: 16px;
+    min-width: 42px;
+    padding: 0 5px;
+    margin-left: 6px;
+    border-radius: 8px;
+    flex-shrink: 0;
 }
+
+.ppe-divider { width: 1px; flex-shrink: 0; }
+.ppe-divider-grip { position: absolute; left: -3px; width: 7px; top: 0; bottom: 0; cursor: resize-horizontal; }
+
+/* ---------- empty states ---------- */
+
+.ppe-empty { flex-grow: 1; justify-content: center; align-items: center; padding: 12px; }
+.ppe-empty-title { -unity-font-style: bold; font-size: 13px; margin-bottom: 4px; -unity-text-align: middle-center; white-space: normal; }
+.ppe-empty-text { -unity-text-align: middle-center; white-space: normal; margin-bottom: 8px; max-width: 280px; }
+.ppe-empty-actions { flex-direction: row; flex-wrap: wrap; justify-content: center; }
+
+/* ---------- detail ---------- */
+
+.ppe-detail-pane { flex-grow: 1; flex-shrink: 1; min-width: 230px; overflow: hidden; }
+.ppe-detail { flex-grow: 1; flex-shrink: 1; padding: 8px 8px 0 8px; }
+.ppe-detail-header { height: 24px; margin-bottom: 4px; }
+.ppe-key-title { font-size: 13px; -unity-font-style: bold; flex-grow: 1; padding-left: 2px; }
+.ppe-key-field { flex-grow: 1; flex-shrink: 1; min-width: 40px; margin-left: 0; }
+.ppe-field-row { height: 22px; margin-bottom: 2px; }
+.ppe-field-label { width: 44px; flex-shrink: 0; padding-left: 2px; }
+.ppe-type-field { width: 92px; flex-shrink: 0; margin-left: 0; }
+.ppe-info { margin-left: 8px; }
+.ppe-value-header { flex-wrap: wrap; margin-top: 4px; margin-bottom: 2px; min-height: 20px; }
+.ppe-value-label { padding-left: 2px; margin-right: 6px; flex-shrink: 0; }
+.ppe-value { flex-grow: 1; flex-shrink: 1; min-height: 44px; margin-left: 0; margin-right: 0; }
+.ppe-value .unity-base-text-field__input,
+.ppe-value .unity-text-field__input { -unity-text-align: upper-left; white-space: normal; padding: 4px; }
+
+.ppe-mini-button { height: 18px; padding: 0 6px; margin-right: 0; font-size: 11px; }
+.ppe-icon-button {
+    width: 22px; height: 20px; padding: 0; margin: 0;
+    border-width: 0; background-color: rgba(0, 0, 0, 0);
+    justify-content: center; align-items: center;
+}
+.ppe-icon-button:hover { background-color: rgba(128, 128, 128, 0.25); }
+
+/* Footer: state on the left, Revert / Save on the right like Unity's Revert / Apply. */
+.ppe-footer { min-height: 30px; padding: 4px 0 6px 0; flex-wrap: wrap; }
+.ppe-footer Button { min-width: 64px; margin-left: 4px; margin-right: 0; }
+.ppe-dirty { -unity-font-style: bold; margin-right: 6px; }
+
+/* ---------- banners ---------- */
+
+.ppe-banner {
+    flex-direction: row;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 4px 6px;
+    margin-top: 4px;
+    border-radius: 3px;
+    border-width: 1px;
+    flex-shrink: 0;
+}
+.ppe-banner-icon { width: 16px; height: 16px; margin-right: 6px; margin-top: 1px; flex-shrink: 0; -unity-background-scale-mode: scale-to-fit; }
+.ppe-banner-text { flex-grow: 1; flex-shrink: 1; flex-basis: 120px; white-space: normal; max-height: 44px; overflow: hidden; }
+.ppe-banner-actions { flex-direction: row; flex-shrink: 0; margin-left: auto; }
+.ppe-banner-actions Button { height: 18px; font-size: 11px; margin: 0 0 0 4px; padding: 0 6px; }
+
+/* ---------- status bar ---------- */
+
+.ppe-statusbar { height: 20px; padding: 0 6px; border-top-width: 1px; flex-shrink: 0; }
+.ppe-status-icon { width: 14px; height: 14px; margin-right: 4px; flex-shrink: 0; -unity-background-scale-mode: scale-to-fit; }
+.ppe-source { margin-left: 8px; flex-shrink: 0; }
+
+/* ---------- import preview ---------- */
+
+.ppe-dialog { padding: 10px 10px 8px 10px; }
+.ppe-dialog-title { font-size: 14px; -unity-font-style: bold; }
+.ppe-dialog-subtitle { margin-bottom: 8px; }
+.ppe-segmented { flex-direction: row; flex-shrink: 0; margin-right: 8px; }
+.ppe-segmented Button { margin: 0; border-radius: 0; min-width: 64px; }
+.ppe-segmented Button:first-child { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+.ppe-segmented Button:last-child { border-top-right-radius: 3px; border-bottom-right-radius: 3px; margin-left: -1px; }
+.ppe-mode-help { white-space: normal; flex-grow: 1; flex-shrink: 1; flex-basis: 150px; }
+.ppe-summary { margin-top: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.ppe-summary .ppe-pill { margin-left: 0; margin-right: 6px; }
+.ppe-table { flex-grow: 1; border-width: 1px; border-radius: 3px; margin-top: 4px; }
+.ppe-table-header { height: 20px; padding: 0 6px 0 4px; border-bottom-width: 1px; -unity-font-style: bold; }
+.ppe-diff-row { flex-direction: row; align-items: center; height: 22px; padding: 0 6px 0 4px; }
+.ppe-diff-toggle { width: 18px; margin: 0 4px 0 0; flex-shrink: 0; }
+.ppe-diff-kind { width: 76px; flex-shrink: 0; }
+.ppe-diff-kind .ppe-pill { margin-left: 0; }
+.ppe-diff-key { flex-basis: 35%; flex-grow: 1; }
+.ppe-diff-change { flex-basis: 65%; flex-grow: 1; margin-left: 8px; }
+
+/* ---------- theme: dark ---------- */
+
+.ppe-dark .ppe-list-header,
+.ppe-dark .ppe-table-header { border-color: rgba(0, 0, 0, 0.45); background-color: rgba(255, 255, 255, 0.02); }
+.ppe-dark .ppe-statusbar { border-color: rgba(0, 0, 0, 0.45); }
+.ppe-dark .ppe-divider { background-color: rgba(0, 0, 0, 0.45); }
+.ppe-dark .ppe-table { border-color: rgba(0, 0, 0, 0.45); }
+.ppe-dark .ppe-dim { color: #9a9a9a; }
+
+.ppe-dark .ppe-type--int { color: #9cc9ff; background-color: #2f4256; }
+.ppe-dark .ppe-type--float { color: #a3dea3; background-color: #2f4a33; }
+.ppe-dark .ppe-type--string { color: #f2c584; background-color: #4d3f2a; }
+.ppe-dark .ppe-type--unknown { color: #c2c2c2; background-color: #474747; }
+.ppe-dark .ppe-diff--added { color: #a3dea3; background-color: #2f4a33; }
+.ppe-dark .ppe-diff--changed { color: #f2c584; background-color: #4d3f2a; }
+.ppe-dark .ppe-diff--removed { color: #f5a3a3; background-color: #553333; }
+.ppe-dark .ppe-diff--unchanged { color: #bdbdbd; background-color: #444444; }
+
+.ppe-dark .ppe-dirty { color: #f0c35a; }
+.ppe-dark .ppe-text--error { color: #f08a8a; }
+.ppe-dark .ppe-text--warning { color: #f0c35a; }
+.ppe-dark .ppe-banner--error { background-color: rgba(240, 110, 110, 0.10); border-color: rgba(240, 110, 110, 0.35); }
+.ppe-dark .ppe-banner--warning { background-color: rgba(240, 195, 90, 0.08); border-color: rgba(240, 195, 90, 0.32); }
+.ppe-dark .ppe-banner--info { background-color: rgba(255, 255, 255, 0.04); border-color: rgba(255, 255, 255, 0.12); }
+
+.ppe-dark .ppe-primary:enabled { background-color: #2f68a8; border-color: #23558c; color: #ffffff; }
+.ppe-dark .ppe-primary:enabled:hover { background-color: #3a77ba; }
+.ppe-dark .ppe-primary:enabled:active { background-color: #285b94; }
+.ppe-dark .ppe-segmented .ppe-selected { background-color: #46607c; color: #ffffff; }
+
+/* ---------- theme: light ---------- */
+
+.ppe-light .ppe-list-header,
+.ppe-light .ppe-table-header { border-color: rgba(0, 0, 0, 0.18); background-color: rgba(0, 0, 0, 0.03); }
+.ppe-light .ppe-statusbar { border-color: rgba(0, 0, 0, 0.18); }
+.ppe-light .ppe-divider { background-color: rgba(0, 0, 0, 0.2); }
+.ppe-light .ppe-table { border-color: rgba(0, 0, 0, 0.2); }
+.ppe-light .ppe-dim { color: #5f5f5f; }
+
+.ppe-light .ppe-type--int { color: #17549a; background-color: #d4e2f4; }
+.ppe-light .ppe-type--float { color: #23692a; background-color: #d3e9d4; }
+.ppe-light .ppe-type--string { color: #834a00; background-color: #f1e0c6; }
+.ppe-light .ppe-type--unknown { color: #484848; background-color: #e3e3e3; }
+.ppe-light .ppe-diff--added { color: #23692a; background-color: #d3e9d4; }
+.ppe-light .ppe-diff--changed { color: #834a00; background-color: #f1e0c6; }
+.ppe-light .ppe-diff--removed { color: #a3231b; background-color: #f4d5d2; }
+.ppe-light .ppe-diff--unchanged { color: #484848; background-color: #e3e3e3; }
+
+.ppe-light .ppe-dirty { color: #8a5a00; }
+.ppe-light .ppe-text--error { color: #b3261e; }
+.ppe-light .ppe-text--warning { color: #8a5a00; }
+.ppe-light .ppe-banner--error { background-color: rgba(179, 38, 30, 0.07); border-color: rgba(179, 38, 30, 0.30); }
+.ppe-light .ppe-banner--warning { background-color: rgba(160, 110, 0, 0.08); border-color: rgba(160, 110, 0, 0.30); }
+.ppe-light .ppe-banner--info { background-color: rgba(0, 0, 0, 0.03); border-color: rgba(0, 0, 0, 0.12); }
+
+.ppe-light .ppe-primary:enabled { background-color: #3a74b8; border-color: #2c5f9a; color: #ffffff; }
+.ppe-light .ppe-primary:enabled:hover { background-color: #4683c8; }
+.ppe-light .ppe-primary:enabled:active { background-color: #326aa8; }
+.ppe-light .ppe-segmented .ppe-selected { background-color: #6f8fb4; color: #ffffff; }

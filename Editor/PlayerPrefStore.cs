@@ -27,13 +27,19 @@ namespace kinatraa.PlayerPrefEditor
         /// <summary>All existing keys, sorted alphabetically (case-insensitive).</summary>
         public static List<string> GetKeys()
         {
-            var keys = new HashSet<string>(StringComparer.Ordinal);
             var native = NativePrefs.ReadKeys(out var error);
-            LastNativeError = error;
-            if (native != null)
+            return GetKeys(new NativePrefs.Snapshot(native, error));
+        }
+
+        /// <summary>Like <see cref="GetKeys()"/>, from an OS store snapshot read earlier (see <see cref="NativePrefs.ReadKeysAsync"/>).</summary>
+        public static List<string> GetKeys(NativePrefs.Snapshot native)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            LastNativeError = native.Error;
+            if (native.Keys != null)
             {
-                _nativeTypes = native;
-                keys.UnionWith(native.Keys);
+                _nativeTypes = native.Keys;
+                keys.UnionWith(native.Keys.Keys);
             }
 
             var tracked = LoadList(TrackedListKey);
@@ -49,6 +55,8 @@ namespace kinatraa.PlayerPrefEditor
 
         public static List<PrefEntry> ReadAll() => GetKeys().Select(Read).ToList();
 
+        public static List<PrefEntry> ReadAll(NativePrefs.Snapshot native) => GetKeys(native).Select(Read).ToList();
+
         public static int CompareKeys(string a, string b)
         {
             int c = string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
@@ -61,8 +69,11 @@ namespace kinatraa.PlayerPrefEditor
         public static PrefEntry Read(string key)
         {
             if (!PlayerPrefs.HasKey(key)) return null;
-            var type = DetectType(key);
-            if (type == PrefType.Unknown && _nativeTypes.TryGetValue(key, out var hint)) type = hint;
+            bool isInt = PlayerPrefs.GetInt(key, 1) != 1 || PlayerPrefs.GetInt(key, 2) != 2;
+            bool isFloat = PlayerPrefs.GetFloat(key, 1f) != 1f || PlayerPrefs.GetFloat(key, 2f) != 2f;
+            bool isString = PlayerPrefs.GetString(key, "\u0001") != "\u0001" || PlayerPrefs.GetString(key, "\u0002") != "\u0002";
+            var hint = _nativeTypes.TryGetValue(key, out var stored) ? stored : PrefType.Unknown;
+            var type = ResolveType(isInt, isFloat, isString, hint);
             switch (type)
             {
                 case PrefType.Int: return new PrefEntry(key, type, PlayerPrefs.GetInt(key));
@@ -161,18 +172,18 @@ namespace kinatraa.PlayerPrefEditor
             SaveList(PinnedListKey, pins);
         }
 
-        // Typed getters return the default when the stored type differs, so asking twice with different
-        // defaults reveals the type. ponytail: best-effort; a platform that converts between types gives Unknown
-        // and the OS store's type is used instead.
-        static PrefType DetectType(string key)
+        /// <summary>
+        /// Typed getters return the default when the stored type differs, so <see cref="Read"/> asks each getter twice with
+        /// different defaults; a getter that answers both times holds the value. One answering getter decides the type.
+        /// When several answer (a platform that converts between types), the OS store's type is used, but only if its
+        /// getter answered too; a hint whose getter returns nothing would read back a default and overwrite real data.
+        /// Anything else is Unknown, and the value is never read.
+        /// </summary>
+        internal static PrefType ResolveType(bool isInt, bool isFloat, bool isString, PrefType hint)
         {
-            bool isInt = PlayerPrefs.GetInt(key, 1) != 1 || PlayerPrefs.GetInt(key, 2) != 2;
-            bool isFloat = PlayerPrefs.GetFloat(key, 1f) != 1f || PlayerPrefs.GetFloat(key, 2f) != 2f;
-            bool isString = PlayerPrefs.GetString(key, "\u0001") != "\u0001" || PlayerPrefs.GetString(key, "\u0002") != "\u0002";
-
-            if (isInt && !isFloat && !isString) return PrefType.Int;
-            if (isFloat && !isInt && !isString) return PrefType.Float;
-            if (isString && !isInt && !isFloat) return PrefType.String;
+            int answered = (isInt ? 1 : 0) + (isFloat ? 1 : 0) + (isString ? 1 : 0);
+            if (answered == 1) return isInt ? PrefType.Int : isFloat ? PrefType.Float : PrefType.String;
+            if (answered > 1 && (hint == PrefType.Int && isInt || hint == PrefType.Float && isFloat || hint == PrefType.String && isString)) return hint;
             return PrefType.Unknown;
         }
 

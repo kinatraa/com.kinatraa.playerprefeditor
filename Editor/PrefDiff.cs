@@ -51,5 +51,9 @@ namespace kinatraa.PlayerPrefEditor
         }
 
         public static int Count(IEnumerable<DiffRow> rows, DiffKind kind) => rows.Count(r => r.Kind == kind);
+
+        /// <summary>True when both are missing, hold the same type and value, or are both unreadable.</summary>
+        internal static bool Same(PrefEntry a, PrefEntry b) =>
+            a == null ? b == null : b != null && (a.SameValue(b) || a.Type == PrefType.Unknown && b.Type == PrefType.Unknown);
     }
 }
